@@ -1,0 +1,72 @@
+"""应用配置管理 —— 从环境变量加载"""
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    # === MySQL ===
+    MYSQL_HOST: str = "192.168.10.20"
+    MYSQL_PORT: int = 3306
+    MYSQL_USER: str = "root"
+    MYSQL_PASSWORD: str = "changeme_2024"
+    MYSQL_DATABASE: str = "canteen_agent"
+
+    @property
+    def DATABASE_URL(self) -> str:
+        return (
+            f"mysql+pymysql://{self.MYSQL_USER}:{self.MYSQL_PASSWORD}"
+            f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
+        )
+
+    # === Redis ===
+    REDIS_HOST: str = "192.168.10.20"
+    REDIS_PORT: int = 6379
+    REDIS_PASSWORD: str = ""
+
+    @property
+    def REDIS_URL(self) -> str:
+        if self.REDIS_PASSWORD:
+            return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}"
+        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}"
+
+    # === RabbitMQ ===
+    RABBITMQ_HOST: str = "192.168.10.20"
+    RABBITMQ_PORT: int = 5672
+    RABBITMQ_USER: str = "admin"
+    RABBITMQ_PASSWORD: str = "changeme_2024"
+
+    @property
+    def RABBITMQ_URL(self) -> str:
+        return (
+            f"amqp://{self.RABBITMQ_USER}:{self.RABBITMQ_PASSWORD}"
+            f"@{self.RABBITMQ_HOST}:{self.RABBITMQ_PORT}/"
+        )
+
+    # === OpenAI LLM ===
+    OPENAI_API_KEY: str = "sk-your-api-key-here"
+    OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+    OPENAI_LLM_MODEL: str = "gpt-4o"
+
+    # === OpenAI Embedding ===
+    OPENAI_EMBED_API_KEY: str = "sk-your-api-key-here"
+    OPENAI_EMBED_BASE_URL: str = "https://api.openai.com/v1"
+    OPENAI_EMBED_MODEL: str = "text-embedding-3-small"
+
+    # === Milvus ===
+    MILVUS_HOST: str = "192.168.10.20"
+    MILVUS_PORT: int = 19530
+
+    # === Agent ===
+    AGENT_CONFIDENCE_THRESHOLD: float = 0.75
+    AGENT_RAG_TOP_K: int = 3
+    AGENT_RAG_SIMILARITY_THRESHOLD: float = 0.6
+
+    # === Backend ===
+    BACKEND_SECRET_KEY: str = "dev-secret-change-in-production"
+    BACKEND_PORT: int = 8000
+
+    class Config:
+        env_file = "../.env"
+        extra = "allow"
+
+
+settings = Settings()
