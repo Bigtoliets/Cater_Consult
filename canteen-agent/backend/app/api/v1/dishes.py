@@ -87,6 +87,7 @@ async def get_dish_diagnosis(
         },
         "diagnosis": {
             "id": diagnosis.id,
+            "decision_id": diagnosis.decision_id,
             "status": diagnosis.status.value if diagnosis and diagnosis.status else None,
             "conflict_type": diagnosis.conflict_type,
             "confidence": diagnosis.confidence,

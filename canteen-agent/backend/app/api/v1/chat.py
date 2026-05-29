@@ -1,36 +1,48 @@
-"""智能问答 API —— 直接调用 Agent 工作流（已合并）"""
+"""智能问答 API — 后端直接查双库 RAG"""
+import json
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 from app.agent.utils.llm import get_llm
-from app.agent.workflow import agent_workflow
-from app.agent.state import AgentState
-import json
+from app.agent.utils.milvus_client import search_with_score
+from app.agent.prompts.templates import CHAT_SYSTEM_PROMPT
 
 router = APIRouter()
 
 
 @router.post("/query")
 async def chat_query(question: str = Query(..., description="用户问题")):
-    """SSE 流式对话 —— 直接调用 OpenAI"""
+    """SSE 流式对话 — 后端直接查双库 RAG，无需经 Agent 微服务"""
 
     async def event_stream():
         try:
+            # ── 双库检索历史经验 ──
+            gold_results = await search_with_score("gold_collection", question, k=2)
+            standard_results = await search_with_score("standard_collection", question, k=2)
+
+            experience_context = ""
+            if gold_results:
+                experience_context += "\n【🏅 金标经验（管理层认证）】\n"
+                for r in gold_results:
+                    experience_context += f"[GOLD] [相似度 {r['score']:.2f}] {r['content'][:400]}\n"
+            if standard_results:
+                experience_context += "\n【📋 普通经验（仅供参考）】\n"
+                for r in standard_results:
+                    experience_context += f"[STANDARD] [相似度 {r['score']:.2f}] {r['content'][:400]}\n"
+
+            system_prompt = CHAT_SYSTEM_PROMPT
+            if experience_context:
+                system_prompt += f"\n\n当前查询到的历史经验：{experience_context}"
+
             llm = get_llm()
-            system_prompt = (
-                "你是食堂品控智能助手。你可以帮助食堂经理：\n"
-                "1. 查询和分析菜品评价数据\n"
-                "2. 生成品控改进建议\n"
-                "3. 解读诊断报告\n"
-                "4. 对比不同档口/食堂的品控表现\n"
-                "请基于系统数据给出专业、可操作的建议。如果数据不足，如实说明。"
-            )
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": question},
             ]
+
             async for chunk in llm.astream(question):
                 if hasattr(chunk, "content") and chunk.content:
                     yield f"data: {json.dumps({'content': chunk.content})}\n\n"
+
             yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
@@ -43,11 +55,11 @@ async def get_preset_questions():
     """预设快捷问询"""
     return {
         "presets": [
-            "查询昨日客诉最多的档口",
-            "生成上周三层食堂的综合改进报告",
-            "为什么今天红烧肉评价这么差？",
+            "最近红烧肉的客诉情况怎么样？",
+            "上周有哪些菜品收到了集中差评？",
+            "肉质发硬有什么金标整改经验？",
+            "对比一下两个食堂的满意度趋势",
             "本周食品安全相关投诉汇总",
-            "对比一食堂和二食堂的满意度趋势",
             "哪道菜的复发性差评最多？",
         ]
     }

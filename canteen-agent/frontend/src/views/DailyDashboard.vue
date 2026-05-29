@@ -63,14 +63,25 @@
         </el-card>
       </el-col>
 
-      <!-- AI 摘要 -->
+      <!-- 核心改进摘要表格（可展开） -->
       <el-col :span="12">
         <el-card shadow="hover">
-          <template #header>📝 核心改进摘要（AI 生成）</template>
-          <div class="ai-summary" v-if="summary?.ai_summary">
-            {{ summary.ai_summary }}
-          </div>
-          <el-empty v-else description="暂无 AI 摘要" />
+          <template #header>📝 核心改进摘要（AI 融合决策）</template>
+          <el-table :data="summaryTable" size="small" v-if="summaryTable.length" max-height="350">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div v-for="(d, i) in row.decisions" :key="i" style="display:flex;align-items:center;justify-content:space-between;padding:6px 12px;border-bottom:1px dashed #ebeef5">
+                  <span style="flex:1;font-size:12px;color:#606266">{{ d.corrective_action?.slice(0, 120) }}{{ d.corrective_action?.length > 120 ? '...' : '' }}</span>
+                  <el-button type="success" size="small" :icon="Star" :disabled="!d.decision_id" @click="handleLike(d.decision_id)" style="margin-left:8px">飞升金标</el-button>
+                </div>
+                <el-empty v-if="!row.decisions?.length" description="无子决策" :image-size="40" />
+              </template>
+            </el-table-column>
+            <el-table-column prop="dish_name" label="菜品" width="90" />
+            <el-table-column prop="negative_count" label="决策数" width="65" align="center" />
+            <el-table-column prop="corrective_summary" label="AI 融合摘要" show-overflow-tooltip min-width="180" />
+          </el-table>
+          <el-empty v-else description="暂无数据" :image-size="60" />
         </el-card>
       </el-col>
     </el-row>
@@ -85,10 +96,14 @@ import { TitleComponent, TooltipComponent, LegendComponent } from "echarts/compo
 import { CanvasRenderer } from "echarts/renderers";
 import VChart from "vue-echarts";
 import { useDashboardStore } from "../stores/dashboard";
+import { getSummaryTable, promoteDecision } from "../api";
+import { Star } from "@element-plus/icons-vue";
+import { ElMessage } from "element-plus";
 
 use([PieChart, RadarChart, TitleComponent, TooltipComponent, LegendComponent, CanvasRenderer]);
 
 const store = useDashboardStore();
+const summaryTable = ref([]);
 
 function todayStr() {
   const d = new Date();
@@ -148,8 +163,28 @@ const radarChartOption = computed(() => ({
 
 async function loadData(dateStr) {
   loading.value = true;
-  await Promise.all([store.fetchSummary(dateStr), store.fetchRadar(dateStr)]);
+  await Promise.all([store.fetchSummary(dateStr), store.fetchRadar(dateStr), fetchSummaryTable(dateStr)]);
   loading.value = false;
+}
+
+async function fetchSummaryTable(dateStr) {
+  try {
+    const res = await getSummaryTable(dateStr);
+    summaryTable.value = res.data.table || [];
+  } catch { summaryTable.value = []; }
+}
+
+async function handleLike(decisionId) {
+  try {
+    const res = await promoteDecision(decisionId);
+    if (res.data?.status === "promoted") {
+      ElMessage.success("🎉 已飞升至金标准库！");
+    } else {
+      ElMessage.warning("未找到该决策");
+    }
+  } catch (e) {
+    ElMessage.error("飞升失败：" + (e.response?.data?.detail || e.message));
+  }
 }
 
 onMounted(() => loadData(selectedDate.value));

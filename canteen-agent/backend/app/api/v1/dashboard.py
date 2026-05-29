@@ -190,3 +190,75 @@ async def get_complaint_radar(
         for k, v in sorted(dimension_count.items(), key=lambda x: x[1], reverse=True)
     ]
     return {"date": str(target_date), "radar": radar_data}
+
+
+@router.get("/summary-table")
+async def get_summary_table(
+    target_date: date = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    核心改进摘要表格：
+      1. 查 diagnoses 表（已包含 Agent 流水线生成的 corrective_action）
+      2. 按菜品聚合，LLM 融合已有的技术决策为一份主厨摘要
+      3. 返回子决策列表，供前端展开 + 单条点赞
+    返回: [{dish_name, negative_count, corrective_summary, decisions: [{decision_id, corrective_action}]}]
+    """
+    if target_date is None:
+        target_date = date.today()
+
+    from app.models.models import Diagnosis, Dish
+
+    # 查当日有整改单的诊断记录
+    result = await db.execute(
+        select(Diagnosis).where(
+            func.date(Diagnosis.created_at) == target_date,
+            Diagnosis.corrective_action.isnot(None),
+        )
+    )
+    diagnoses = result.scalars().all()
+
+    if not diagnoses:
+        return {"date": str(target_date), "table": []}
+
+    # 批量取菜品名
+    dish_ids = list({d.dish_id for d in diagnoses if d.dish_id})
+    dish_name_map = {}
+    if dish_ids:
+        dish_result = await db.execute(
+            select(Dish.id, Dish.name).where(Dish.id.in_(dish_ids))
+        )
+        dish_name_map = {did: dname for did, dname in dish_result.all()}
+
+    # 按菜品分组
+    groups: dict[str, dict] = {}
+    for d in diagnoses:
+        key = str(d.dish_id) if d.dish_id else "未知菜品"
+        if key not in groups:
+            groups[key] = {"decisions": [], "dish_id": d.dish_id}
+        groups[key]["decisions"].append({
+            "decision_id": d.decision_id,
+            "corrective_action": d.corrective_action,
+        })
+
+    table = []
+
+    for key, group in groups.items():
+        dish_name = dish_name_map.get(group["dish_id"], "未知菜品") if group["dish_id"] else key
+        decisions = group["decisions"]
+
+        # 不调 LLM — 直接拼接已有决策预览，毫秒级响应
+        if len(decisions) == 1:
+            summary = decisions[0]["corrective_action"][:100]
+        else:
+            preview = decisions[0]["corrective_action"][:60]
+            summary = f"共 {len(decisions)} 条整改决策。{preview}..."
+
+        table.append({
+            "dish_name": dish_name,
+            "negative_count": len(decisions),
+            "corrective_summary": summary,
+            "decisions": decisions,
+        })
+
+    return {"date": str(target_date), "table": table}

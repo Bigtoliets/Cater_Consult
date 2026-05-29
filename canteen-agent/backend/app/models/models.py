@@ -143,11 +143,13 @@ class Diagnosis(Base):
     __tablename__ = "diagnoses"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    dish_id = Column(Integer, ForeignKey("dishes.id"), nullable=False)
+    review_id = Column(Integer, ForeignKey("reviews.id"), nullable=True, comment="关联的原始评价ID")
+    dish_id = Column(Integer, ForeignKey("dishes.id"), nullable=True, comment="消歧后的菜品ID")
     status = Column(SAEnum(DiagnosisStatus), default=DiagnosisStatus.PENDING)
     conflict_type = Column(String(50), comment="冲突类型：TASTE_PREFERENCE / QUALITY_FLUCTUATION / FOOD_SAFETY")
     confidence = Column(Float, default=0.0, comment="综合置信度 0-1")
     conflict_analysis = Column(JSON, comment="冲突分析 JSON")
+    decision_id = Column(String(50), comment="决策唯一ID，对应 Milvus 中的记录")
     corrective_action = Column(Text, comment="整改单内容（Markdown）")
     human_review_required = Column(Boolean, default=False)
     human_review_result = Column(String(20), comment="人工复核结果：approved/rejected/modified")

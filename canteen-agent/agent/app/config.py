@@ -46,6 +46,8 @@ class AgentSettings(BaseSettings):
     AGENT_RAG_TOP_K: int = 3
     AGENT_RAG_SIMILARITY_THRESHOLD: float = 0.6
 
+
+
     class Config:
         env_file = "../.env"
         extra = "allow"

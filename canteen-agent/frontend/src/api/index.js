@@ -9,6 +9,9 @@ const api = axios.create({
 export const getDailySummary = (date) =>
   api.get("/dashboard/summary", { params: { target_date: date } });
 
+export const getSummaryTable = (date) =>
+  api.get("/dashboard/summary-table", { params: { target_date: date } });
+
 export const getComplaintRadar = (date) =>
   api.get("/dashboard/radar", { params: { target_date: date } });
 
@@ -38,14 +41,27 @@ export const getDishKnowledge = (dishId, dimension) =>
 export const createSOPEntry = (data) =>
   api.post("/config/knowledge", data);
 
-// ===== 数据上传 =====
-export const uploadCSV = (file) => {
+// ===== 数据上传（两段式：预览 → 确认） =====
+export const uploadPreview = (file) => {
   const formData = new FormData();
   formData.append("file", file);
-  return api.post("/upload/csv", formData, {
+  return api.post("/upload/preview", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
 };
+
+export const uploadConfirm = (file, selectedIndices) => {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("selected", JSON.stringify(selectedIndices));
+  return api.post("/upload/confirm", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+};
+
+// ===== 双库迁移 =====
+export const promoteDecision = (decisionId) =>
+  api.post("/config/promote", { decision_id: decisionId });
 
 // ===== 智能问答 =====
 export const chatQuery = (question) =>

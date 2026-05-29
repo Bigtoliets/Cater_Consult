@@ -1,25 +1,25 @@
 """Agent 状态定义（TypedDict）"""
 from typing import TypedDict, List, Dict, Optional
+import uuid
+
+
+def new_decision_id() -> str:
+    return f"DEC-{uuid.uuid4().hex[:12].upper()}"
 
 
 class AgentState(TypedDict):
-    # === 原始数据 ===
-    raw_reviews: List[Dict]            # 批量流入的原始评价
-    filtered_reviews: List[Dict]       # 清洗后的有效评价
+    # === 原始数据（单条） ===
+    review: Dict                       # 单条评价 {raw_text, stall_name, dish_name_raw, ...}
+    filtered_review: Dict              # 清洗后的单条结构化结果
 
-    # === 菜品消歧结果 ===
-    dish_info: Dict                    # {"dish_id": "D102", "dish_name": "土豆肉丝",
-                                       #  "chef_id": "C005", "stall_name": "二楼川湘档口",
-                                       #  "meal_time": "lunch", "match_confidence": 0.92}
+    # === 菜品消歧 ===
+    dish_info: Dict                    # dish_id, dish_name, stall_name, match_confidence...
 
-    # === 风险与知识 ===
-    risk_level: int                    # 风险等级 1-5
-    knowledge_context: str             # SOP标准 + 历史客诉 + 成本约束
-
-    # === 分析与决策 ===
-    conflict_analysis: Dict            # 冲突检测结构
-    confidence: float                  # 系统综合置信度 0.0-1.0
+    # === 检索 ===
+    risk_level: int
+    knowledge_context: str             # 双库检索拼接结果（[GOLD] / [STANDARD] 标签）
 
     # === 输出 ===
-    corrective_action: Optional[str]   # 最终生成的整改单文本
-    human_review_required: bool        # 是否需要人工复核
+    decision_id: str                   # 唯一决策ID，用于后续飞升
+    corrective_action: Optional[str]
+    human_review_required: bool

@@ -71,6 +71,9 @@
           <el-button type="primary" @click="handleDispatch">下发至后厨</el-button>
           <el-button type="warning" @click="handleModify">修改后下发</el-button>
           <el-button @click="handleReject">驳回/忽略</el-button>
+          <el-button type="success" :icon="Star" @click="handlePromote" :loading="promoting" :disabled="!diagnosis?.diagnosis?.decision_id">
+            👍 设为金标
+          </el-button>
         </div>
       </el-card>
     </div>
@@ -81,12 +84,14 @@
 
 <script setup>
 import { ref } from "vue";
-import { getDishDiagnosis, dispatchDiagnosis, rejectDiagnosis } from "../api";
+import { getDishDiagnosis, dispatchDiagnosis, rejectDiagnosis, promoteDecision } from "../api";
 import { marked } from "marked";
+import { Star } from "@element-plus/icons-vue";
 
 const dishId = ref("");
 const diagnosis = ref(null);
 const loading = ref(false);
+const promoting = ref(false);
 
 async function loadDiagnosis() {
   if (!dishId.value) return;
@@ -124,6 +129,29 @@ async function handleDispatch() {
 async function handleReject() {
   await rejectDiagnosis(dishId.value);
   ElMessage.info("整改单已驳回");
+}
+
+async function handlePromote() {
+  const decisionId = diagnosis.value?.diagnosis?.decision_id;
+  if (!decisionId) {
+    ElMessage.warning("该诊断报告缺少决策ID，无法设为金标");
+    return;
+  }
+  promoting.value = true;
+  try {
+    const res = await promoteDecision(decisionId);
+    if (res.data?.status === "promoted") {
+      ElMessage.success("🎉 已飞升至金标准库！该方案将作为标杆经验供后续参考");
+    } else if (res.data?.status === "not_found") {
+      ElMessage.warning("未在经验库中找到该决策，可能已被迁移或尚未入库");
+    } else {
+      ElMessage.success("操作完成");
+    }
+  } catch (e) {
+    ElMessage.error("飞升失败：" + (e.response?.data?.detail || e.message));
+  } finally {
+    promoting.value = false;
+  }
 }
 
 function handleModify() {

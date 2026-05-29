@@ -10,6 +10,26 @@ from app.models import get_db, SystemConfig, SOPEntry, Dish
 router = APIRouter()
 
 
+# ===== 双库跨库迁移 =====
+
+class PromoteRequest(BaseModel):
+    decision_id: str
+    modified_content: str | None = None  # 人工修改后的内容，传了就用它飞升
+
+
+@router.post("/promote")
+async def promote_to_gold(body: PromoteRequest):
+    """将指定 decision_id 从 standard_collection 迁移到 gold_collection"""
+    try:
+        from app.agent.utils.milvus_client import promote_to_gold as do_promote
+        result = await do_promote(body.decision_id, body.modified_content)
+        return result
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Milvus 客户端不可用，请检查 pymilvus 安装")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"跨库迁移失败：{str(e)}")
+
+
 class ConfigUpdate(BaseModel):
     config_value: Any
     description: str = ""

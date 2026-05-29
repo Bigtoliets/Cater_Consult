@@ -60,11 +60,13 @@
 
       <!-- 数据源 -->
       <el-tab-pane label="数据源" name="datasource">
+        <!-- 步骤 1：上传文件 -->
         <el-upload
           drag
           :auto-upload="false"
           :on-change="handleFileChange"
           accept=".csv,.xlsx,.xls"
+          :show-file-list="false"
         >
           <el-icon class="el-icon--upload"><upload-filled /></el-icon>
           <div class="el-upload__text">
@@ -72,22 +74,53 @@
           </div>
           <template #tip>
             <div class="el-upload__tip">
-              支持 CSV / Excel 格式。请确保包含：评价时间、档口名称、评价内容
+              支持 CSV / Excel。表头列名请使用：raw_text（必填）、stall_name（必填）、dish_name_raw、source、rating、meal_time、reviewed_at
             </div>
           </template>
         </el-upload>
-        <div v-if="uploadResult" style="margin-top: 16px">
+
+        <!-- 步骤 2：预览 & 勾选确认 -->
+        <div v-if="previewData" style="margin-top: 16px">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px">
+            <span>共解析 <b>{{ previewData.total }}</b> 条数据，已勾选 <b>{{ selectedRows.length }}</b> 条</span>
+            <div>
+              <el-button type="primary" :disabled="selectedRows.length === 0" :loading="importing" @click="handleConfirmImport">
+                确认导入
+              </el-button>
+              <el-button @click="previewData = null; selectedRows = []; uploadedFile = null">取消</el-button>
+            </div>
+          </div>
+
           <el-alert
-            :title="`上传完成：共 ${uploadResult.total_rows} 条，成功导入 ${uploadResult.imported} 条`"
-            :type="uploadResult.errors?.length ? 'warning' : 'success'"
-            :closable="true"
+            v-if="previewData.errors?.length"
+            :title="`${previewData.errors.length} 行解析失败`"
+            type="warning"
+            :closable="false"
+            style="margin-bottom: 10px"
           />
-          <el-table :data="uploadResult.preview" size="small" style="margin-top: 10px" v-if="uploadResult.preview?.length">
-            <el-table-column prop="raw_text" label="评价内容" show-overflow-tooltip />
-            <el-table-column prop="stall_name" label="档口" width="100" />
-            <el-table-column prop="dish_name_raw" label="菜品" width="100" />
-            <el-table-column prop="rating" label="评分" width="60" />
+
+          <el-table
+            :data="previewData.rows"
+            size="small"
+            border
+            max-height="400"
+            @selection-change="handleSelectionChange"
+          >
+            <el-table-column type="selection" width="45" />
+            <el-table-column type="index" label="#" width="40" />
+            <el-table-column prop="raw_text" label="评价内容" show-overflow-tooltip min-width="200" />
+            <el-table-column prop="stall_name" label="档口" width="150" />
           </el-table>
+        </div>
+
+        <!-- 导入结果 -->
+        <div v-if="importResult" style="margin-top: 16px">
+          <el-alert
+            :title="`导入完成：成功 ${importResult.imported} 条，已预处理 ${importResult.processed} 条`"
+            :type="importResult.errors?.length ? 'warning' : 'success'"
+            :closable="true"
+            @close="importResult = null"
+          />
         </div>
       </el-tab-pane>
 
@@ -112,49 +145,14 @@
         </el-form>
       </el-tab-pane>
 
-      <!-- 知识库 -->
-      <el-tab-pane label="知识库" name="knowledge">
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-select v-model="selectedDishId" placeholder="选择菜品" filterable style="width: 100%">
-              <el-option label="红烧肉 (D045)" :value="1" />
-              <el-option label="麻婆豆腐 (D032)" :value="2" />
-              <el-option label="宫保鸡丁 (D018)" :value="3" />
-              <el-option label="清炒时蔬 (D051)" :value="4" />
-            </el-select>
-          </el-col>
-          <el-col :span="8">
-            <el-radio-group v-model="knowledgeDimension">
-              <el-radio-button label="sop">SOP标准卡</el-radio-button>
-              <el-radio-button label="cost">成本卡</el-radio-button>
-              <el-radio-button label="food_safety">食安规范</el-radio-button>
-            </el-radio-group>
-          </el-col>
-          <el-col :span="8">
-            <el-upload :auto-upload="false" :show-file-list="false">
-              <el-button>上传 .md / .pdf</el-button>
-            </el-upload>
-          </el-col>
-        </el-row>
-        <el-form style="margin-top: 16px" label-width="100px">
-          <el-form-item label="条目标题">
-            <el-input v-model="knowledgeForm.title" placeholder="例如：红烧肉炖煮工艺标准" />
-          </el-form-item>
-          <el-form-item label="条目内容">
-            <el-input v-model="knowledgeForm.content" type="textarea" :rows="6" placeholder="请输入标准SOP内容（支持 Markdown）" />
-          </el-form-item>
-          <el-form-item>
-            <el-button type="primary" @click="saveKnowledge">保存知识条目</el-button>
-          </el-form-item>
-        </el-form>
-      </el-tab-pane>
+
     </el-tabs>
   </div>
 </template>
 
 <script setup>
 import { ref } from "vue";
-import { uploadCSV, updateConfig, createSOPEntry } from "../api";
+import { uploadPreview, uploadConfirm, updateConfig } from "../api";
 import { ElMessage } from "element-plus";
 
 const activeTab = ref("alert");
@@ -181,21 +179,54 @@ const aiConfig = ref({
   weightHistorySimilarity: 0.3,
 });
 
-// 上传结果
-const uploadResult = ref(null);
+// 上传相关
+const uploadedFile = ref(null);
+const previewData = ref(null);
+const selectedRows = ref([]);
+const importing = ref(false);
+const importResult = ref(null);
 
-// 知识库表单
-const selectedDishId = ref(null);
-const knowledgeDimension = ref("sop");
-const knowledgeForm = ref({ title: "", content: "" });
+// ── 两段式上传 ──
 
 async function handleFileChange(file) {
+  // 步骤 1：上传预览
   try {
-    const res = await uploadCSV(file.raw);
-    uploadResult.value = res.data;
-    ElMessage.success(`成功导入 ${res.data.imported} 条评价`);
+    previewData.value = null;
+    importResult.value = null;
+    selectedRows.value = [];
+    uploadedFile.value = file.raw;
+
+    const res = await uploadPreview(file.raw);
+    previewData.value = res.data;
+    ElMessage.success(`解析完成：${res.data.total} 条数据`);
   } catch (e) {
-    ElMessage.error("上传失败：" + e.message);
+    ElMessage.error("文件解析失败：" + (e.response?.data?.detail || e.message));
+    uploadedFile.value = null;
+  }
+}
+
+function handleSelectionChange(selection) {
+  // 勾选项 → 原始行索引（0-based）
+  selectedRows.value = selection.map((item) => previewData.value.rows.indexOf(item));
+}
+
+async function handleConfirmImport() {
+  if (selectedRows.value.length === 0) {
+    ElMessage.warning("请至少勾选一行数据");
+    return;
+  }
+  importing.value = true;
+  try {
+    const res = await uploadConfirm(uploadedFile.value, selectedRows.value);
+    importResult.value = res.data;
+    ElMessage.success(`成功导入 ${res.data.imported} 条评价`);
+    // 清空预览，保留结果展示
+    previewData.value = null;
+    selectedRows.value = [];
+  } catch (e) {
+    ElMessage.error("导入失败：" + (e.response?.data?.detail || e.message));
+  } finally {
+    importing.value = false;
   }
 }
 
@@ -214,21 +245,7 @@ async function saveAiConfig() {
   ElMessage.success("推理配置已保存");
 }
 
-async function saveKnowledge() {
-  if (!selectedDishId.value) {
-    ElMessage.warning("请先选择菜品");
-    return;
-  }
-  await createSOPEntry({
-    dish_id: selectedDishId.value,
-    dimension: knowledgeDimension.value,
-    title: knowledgeForm.value.title,
-    content: knowledgeForm.value.content,
-    metadata_json: {},
-  });
-  ElMessage.success("知识条目已保存");
-  knowledgeForm.value = { title: "", content: "" };
-}
+
 </script>
 
 <style scoped>
