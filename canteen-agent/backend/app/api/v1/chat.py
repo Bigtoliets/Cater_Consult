@@ -1,37 +1,43 @@
-"""智能问答 API — 后端直接查双库 RAG"""
+"""智能问答 API（SSE 流式）—— 对接 Agent 双库 RAG 检索链路"""
 import json
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
-from app.agent.utils.llm import get_llm
-from app.agent.utils.milvus_client import search_with_score
+
+from app.utils.llm import get_llm
 from app.agent.prompts.templates import CHAT_SYSTEM_PROMPT
 
 router = APIRouter()
 
+GOLD_WEIGHT = 0.7
+STANDARD_WEIGHT = 0.3
+
 
 @router.post("/query")
 async def chat_query(question: str = Query(..., description="用户问题")):
-    """SSE 流式对话 — 后端直接查双库 RAG，无需经 Agent 微服务"""
+    from app.agent.utils.milvus_client import search_with_score
 
     async def event_stream():
         try:
-            # ── 双库检索历史经验 ──
             gold_results = await search_with_score("gold_collection", question, k=2)
             standard_results = await search_with_score("standard_collection", question, k=2)
 
+            all_items = []
+            for r in gold_results:
+                all_items.append({"content": r["content"], "score": r["score"], "source": "GOLD", "w": r["score"] * GOLD_WEIGHT})
+            for r in standard_results:
+                all_items.append({"content": r["content"], "score": r["score"], "source": "STANDARD", "w": r["score"] * STANDARD_WEIGHT})
+            all_items.sort(key=lambda x: x["w"], reverse=True)
+
             experience_context = ""
-            if gold_results:
-                experience_context += "\n【🏅 金标经验（管理层认证）】\n"
-                for r in gold_results:
-                    experience_context += f"[GOLD] [相似度 {r['score']:.2f}] {r['content'][:400]}\n"
-            if standard_results:
-                experience_context += "\n【📋 普通经验（仅供参考）】\n"
-                for r in standard_results:
-                    experience_context += f"[STANDARD] [相似度 {r['score']:.2f}] {r['content'][:400]}\n"
+            if all_items:
+                experience_context = "\n\n历史品控经验（已按权重重排序）：\n"
+                for i, item in enumerate(all_items, 1):
+                    tag = "🏅金标" if item["source"] == "GOLD" else "📋普通"
+                    experience_context += f"\n{i}. [{tag}] [加权分{item['w']:.2f}]\n{item['content'][:500]}\n"
 
             system_prompt = CHAT_SYSTEM_PROMPT
             if experience_context:
-                system_prompt += f"\n\n当前查询到的历史经验：{experience_context}"
+                system_prompt += f"\n{experience_context}\n\n请在回答中引用相关历史经验时注明来源（金标/普通）。"
 
             llm = get_llm()
             messages = [
@@ -42,7 +48,6 @@ async def chat_query(question: str = Query(..., description="用户问题")):
             async for chunk in llm.astream(question):
                 if hasattr(chunk, "content") and chunk.content:
                     yield f"data: {json.dumps({'content': chunk.content})}\n\n"
-
             yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
@@ -51,15 +56,14 @@ async def chat_query(question: str = Query(..., description="用户问题")):
 
 
 @router.get("/presets")
-async def get_preset_questions():
-    """预设快捷问询"""
+async def get_presets():
     return {
         "presets": [
-            "最近红烧肉的客诉情况怎么样？",
-            "上周有哪些菜品收到了集中差评？",
-            "肉质发硬有什么金标整改经验？",
-            "对比一下两个食堂的满意度趋势",
-            "本周食品安全相关投诉汇总",
-            "哪道菜的复发性差评最多？",
+            "今天哪些菜品差评最多？分析一下原因",
+            "上次红烧肉的整改方案有效果吗？",
+            "最近一周卫生问题的趋势怎么样？",
+            "对比一下所有档口的差评率排名",
+            "昨天收到的客诉中包含哪些安全风险？",
+            "为什么将上次红烧肉的方案设为金标？",
         ]
     }

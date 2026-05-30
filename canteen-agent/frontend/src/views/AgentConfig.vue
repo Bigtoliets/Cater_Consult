@@ -145,39 +145,86 @@
         </el-form>
       </el-tab-pane>
 
+      <!-- 关键词维度权重 -->
+      <el-tab-pane label="关键词权重" name="keywordWeights">
+        <el-form label-width="140px">
+          <el-alert title="调整各投诉维度的权重，影响 Agent 分析时的优先级。推荐「安全」和「卫生」保持较高权重。" type="info" :closable="false" style="margin-bottom: 16px" />
+          <el-form-item v-for="(val, key) in keywordWeights" :key="key" :label="dimensionLabel(key)">
+            <el-slider v-model="keywordWeights[key]" :min="0.5" :max="10" :step="0.5" show-input style="width: 300px" />
+          </el-form-item>
+          <el-form-item>
+            <el-button type="primary" @click="saveKeywordWeights">保存权重配置</el-button>
+            <el-button @click="resetKeywordWeights">恢复默认</el-button>
+          </el-form-item>
+        </el-form>
+      </el-tab-pane>
+
 
     </el-tabs>
   </div>
 </template>
 
 <script setup>
-import { ref } from "vue";
-import { uploadPreview, uploadConfirm, updateConfig } from "../api";
+import { ref, onMounted } from "vue";
+import { uploadPreview, uploadConfirm, updateConfig, getKeywordWeights, updateKeywordWeights } from "../api";
 import { ElMessage } from "element-plus";
 
 const activeTab = ref("alert");
 
-// 预警配置
 const alertConfig = ref({
   foodSafetyThreshold: 3,
   negativeRateThreshold: 0.10,
   sensitiveWords: ["拉肚子", "食物中毒", "钢丝球", "变质"],
 });
 
-// RAG 配置
 const ragConfig = ref({
   topK: 3,
   similarityThreshold: 0.6,
   poolSize: 20,
 });
 
-// AI 推理配置
 const aiConfig = ref({
   confidenceThreshold: 0.75,
   weightSampleDensity: 0.3,
   weightSopMapping: 0.4,
   weightHistorySimilarity: 0.3,
 });
+
+const DEFAULT_WEIGHTS = {
+  "口味": 1.0, "卫生": 3.0, "分量": 1.0, "温度": 1.0,
+  "口感": 1.5, "价格": 1.0, "服务": 1.0, "安全": 5.0,
+};
+const keywordWeights = ref({ ...DEFAULT_WEIGHTS });
+
+function dimensionLabel(key) {
+  const map = { "口味": "口味", "卫生": "卫生", "分量": "分量", "温度": "温度", "口感": "口感", "价格": "价格", "服务": "服务", "安全": "安全" };
+  return map[key] || key;
+}
+
+async function loadKeywordWeights() {
+  try {
+    const res = await getKeywordWeights();
+    if (res.data?.weights) {
+      keywordWeights.value = { ...DEFAULT_WEIGHTS, ...res.data.weights };
+    }
+  } catch {}
+}
+
+async function saveKeywordWeights() {
+  try {
+    await updateKeywordWeights(keywordWeights.value);
+    ElMessage.success("关键词权重已保存，后续 Agent 分析将使用新权重");
+  } catch (e) {
+    ElMessage.error("保存失败：" + (e.response?.data?.detail || e.message));
+  }
+}
+
+function resetKeywordWeights() {
+  keywordWeights.value = { ...DEFAULT_WEIGHTS };
+  ElMessage.info("已恢复默认权重");
+}
+
+onMounted(() => loadKeywordWeights());
 
 // 上传相关
 const uploadedFile = ref(null);

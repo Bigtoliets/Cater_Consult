@@ -1,4 +1,4 @@
-"""菜品单项诊断 API"""
+"""菜品单项诊断 API —— 含 AI 改进摘要"""
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -13,14 +13,12 @@ async def get_dish_diagnosis(
     dish_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """获取指定菜品的诊断报告"""
-    # 查询菜品
+    """获取指定菜品诊断报告（含 AI 改进摘要）"""
     dish_result = await db.execute(select(Dish).where(Dish.id == dish_id))
     dish = dish_result.scalar_one_or_none()
     if not dish:
         raise HTTPException(status_code=404, detail="菜品不存在")
 
-    # 查询档口和厨师
     stall_result = await db.execute(select(Stall).where(Stall.id == dish.stall_id))
     stall = stall_result.scalar_one_or_none()
 
@@ -29,7 +27,6 @@ async def get_dish_diagnosis(
         chef_result = await db.execute(select(Chef).where(Chef.id == stall.chef_id))
         chef = chef_result.scalar_one_or_none()
 
-    # 查询最新诊断
     diag_result = await db.execute(
         select(Diagnosis)
         .where(Diagnosis.dish_id == dish_id)
@@ -38,16 +35,14 @@ async def get_dish_diagnosis(
     )
     diagnosis = diag_result.scalar_one_or_none()
 
-    # 查询差评列表
     reviews_result = await db.execute(
         select(Review)
-        .where(Review.dish_id == dish_id, Review.sentiment == Sentiment.NEGATIVE)
+        .where(Review.dish_id == dish_id)
         .order_by(Review.created_at.desc())
-        .limit(10)
+        .limit(20)
     )
-    negative_reviews = reviews_result.scalars().all()
+    all_reviews = reviews_result.scalars().all()
 
-    # 当日统计
     today_reviews_result = await db.execute(
         select(func.count(Review.id))
         .where(Review.dish_id == dish_id, func.date(Review.reviewed_at) == func.current_date())
@@ -91,19 +86,20 @@ async def get_dish_diagnosis(
             "status": diagnosis.status.value if diagnosis and diagnosis.status else None,
             "conflict_type": diagnosis.conflict_type,
             "confidence": diagnosis.confidence,
-            "conflict_analysis": diagnosis.conflict_analysis,
+            "summary": diagnosis.summary or "",
             "corrective_action": diagnosis.corrective_action,
             "human_review_required": diagnosis.human_review_required,
         } if diagnosis else None,
-        "negative_reviews": [
+        "reviews": [
             {
                 "id": r.id,
                 "raw_text": r.raw_text,
+                "sentiment": r.sentiment.value if r.sentiment else None,
                 "rating": r.rating,
                 "dimensions": r.dimensions,
-                "reviewed_at": str(r.reviewed_at),
+                "reviewed_at": str(r.reviewed_at) if r.reviewed_at else None,
             }
-            for r in negative_reviews
+            for r in all_reviews
         ],
     }
 
@@ -115,15 +111,12 @@ async def get_dish_reviews(
     limit: int = 20,
     db: AsyncSession = Depends(get_db),
 ):
-    """获取菜品相关评价列表"""
     query = select(Review).where(Review.dish_id == dish_id)
     if sentiment:
         query = query.where(Review.sentiment == sentiment)
     query = query.order_by(Review.created_at.desc()).limit(limit)
-
     result = await db.execute(query)
     reviews = result.scalars().all()
-
     return {
         "dish_id": dish_id,
         "count": len(reviews),
@@ -143,46 +136,28 @@ async def get_dish_reviews(
 
 
 @router.post("/{dish_id}/diagnosis/dispatch")
-async def dispatch_diagnosis(
-    dish_id: int,
-    db: AsyncSession = Depends(get_db),
-):
-    """下发整改单至后厨"""
+async def dispatch_diagnosis(dish_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
-        select(Diagnosis)
-        .where(Diagnosis.dish_id == dish_id)
-        .order_by(Diagnosis.created_at.desc())
-        .limit(1)
+        select(Diagnosis).where(Diagnosis.dish_id == dish_id).order_by(Diagnosis.created_at.desc()).limit(1)
     )
     diagnosis = result.scalar_one_or_none()
     if not diagnosis:
         raise HTTPException(status_code=404, detail="诊断报告不存在")
-
     from app.models.models import DiagnosisStatus
     diagnosis.status = DiagnosisStatus.DISPATCHED
     await db.flush()
-
     return {"status": "ok", "message": "整改单已下发至后厨"}
 
 
 @router.post("/{dish_id}/diagnosis/reject")
-async def reject_diagnosis(
-    dish_id: int,
-    db: AsyncSession = Depends(get_db),
-):
-    """驳回/忽略整改单"""
+async def reject_diagnosis(dish_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
-        select(Diagnosis)
-        .where(Diagnosis.dish_id == dish_id)
-        .order_by(Diagnosis.created_at.desc())
-        .limit(1)
+        select(Diagnosis).where(Diagnosis.dish_id == dish_id).order_by(Diagnosis.created_at.desc()).limit(1)
     )
     diagnosis = result.scalar_one_or_none()
     if not diagnosis:
         raise HTTPException(status_code=404, detail="诊断报告不存在")
-
     from app.models.models import DiagnosisStatus
     diagnosis.status = DiagnosisStatus.REJECTED
     await db.flush()
-
     return {"status": "ok", "message": "整改单已驳回"}

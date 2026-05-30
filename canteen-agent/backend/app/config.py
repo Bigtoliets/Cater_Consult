@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     AGENT_RAG_TOP_K: int = 3
     AGENT_RAG_SIMILARITY_THRESHOLD: float = 0.6
 
+    # === Agent 微服务 ===
+    AGENT_INTERNAL_URL: str = "http://agent:8001"
+
     # === Backend ===
     BACKEND_SECRET_KEY: str = "dev-secret-change-in-production"
     BACKEND_PORT: int = 8000

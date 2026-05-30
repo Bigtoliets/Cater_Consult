@@ -1,4 +1,5 @@
-"""CSV/Excel 文件上传 API — 两段式：预览 → 确认导入"""
+"""CSV/Excel 文件上传 API — 预览 → 确认 → Redis 队列异步分发 Agent"""
+import json
 import traceback
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from pydantic import BaseModel
@@ -7,32 +8,26 @@ from io import BytesIO
 
 from app.models import get_db
 from app.services.etl import ETLService
-from app.services.review_processor import process_new_reviews
+from app.services.review_processor import process_new_reviews, get_dish_review_groups, get_keyword_weights
 
 router = APIRouter()
 
 
 def _check_ext(filename: str) -> str:
-    """校验文件类型，返回小写扩展名"""
     allowed = {".csv", ".xlsx", ".xls"}
     ext = f".{filename.rsplit('.', 1)[-1].lower()}" if "." in filename else ""
     if ext not in allowed:
         raise HTTPException(status_code=400, detail=f"不支持的文件格式：{ext}，仅支持 CSV / Excel")
-    return ext[1:]  # 去掉点号
+    return ext[1:]
 
 
 @router.post("/preview")
 async def upload_preview(file: UploadFile = File(...)):
-    """步骤 1：上传文件，返回解析后的全量数据预览（不写入数据库）"""
     ext = _check_ext(file.filename)
     try:
         content = await file.read()
         result = await ETLService.preview_file(BytesIO(content), ext)
-        return {
-            "status": "ok",
-            "filename": file.filename,
-            **result,
-        }
+        return {"status": "ok", "filename": file.filename, **result}
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"文件解析失败：{str(e)}")
@@ -41,17 +36,15 @@ async def upload_preview(file: UploadFile = File(...)):
 class ConfirmBody(BaseModel):
     filename: str
     ext: str
-    selected: list[int]  # 用户勾选的行索引 (0-based, 对应数据行)
+    selected: list[int]
 
 
 @router.post("/confirm")
 async def upload_confirm(
     file: UploadFile = File(...),
-    selected: str = "[]",      # JSON 数组，如 "[0,2,5]"
+    selected: str = "[]",
     db: AsyncSession = Depends(get_db),
 ):
-    """步骤 2：用户勾选确认后，实际写入数据库"""
-    import json
     ext = _check_ext(file.filename)
     try:
         indices = json.loads(selected)
@@ -61,16 +54,38 @@ async def upload_confirm(
         content = await file.read()
         result = await ETLService.import_selected(BytesIO(content), ext, indices, db)
 
-        # 写入后跑预处理（情感分析 + 维度提取 + 风险评分 + 菜品匹配）
-        process_result = {"processed": 0}
-        if result.get("review_ids"):
-            process_result = await process_new_reviews(db, result["review_ids"])
+        review_ids = result.get("review_ids", [])
+        process_result = {"processed": 0, "batch_id": None, "dish_count": 0}
+
+        if review_ids:
+            process_result = await process_new_reviews(db, review_ids)
+
+            dish_groups = await get_dish_review_groups(db, review_ids)
+            keyword_weights = await get_keyword_weights(db)
+
+            for g in dish_groups.values():
+                g["keyword_weights"] = keyword_weights
+
+            if dish_groups:
+                from app.tasks.redis_queue import push_dish_batch
+                from app.tasks.consumer import process_dish_batch
+
+                groups_list = list(dish_groups.values())
+                batch_id = await push_dish_batch(groups_list)
+
+                process_dish_batch.delay(batch_id)
+
+                process_result["batch_id"] = batch_id
+                process_result["dish_count"] = len(groups_list)
 
         return {
             "status": "ok",
             "filename": file.filename,
             "imported": result["imported"],
             "processed": process_result.get("processed", 0),
+            "batch_id": process_result.get("batch_id"),
+            "dish_count": process_result.get("dish_count", 0),
+            "message": f"已下发 {process_result.get('dish_count', 0)} 个菜品到分析队列，Agent 将异步逐条处理",
             "errors": result.get("errors", []),
         }
     except json.JSONDecodeError:
@@ -82,16 +97,15 @@ async def upload_confirm(
 
 @router.get("/template")
 async def download_template():
-    """下载评价导入模板"""
     return {
         "template_url": "/static/templates/review_import_template.csv",
         "columns": [
             {"name": "raw_text", "required": True, "description": "评价内容"},
             {"name": "stall_name", "required": True, "description": "档口名称"},
             {"name": "dish_name_raw", "required": False, "description": "菜品名称"},
-            {"name": "source", "required": False, "description": "评价来源（微信/美团/饿了么/点餐机）"},
+            {"name": "source", "required": False, "description": "评价来源"},
             {"name": "rating", "required": False, "description": "评分 1-5"},
-            {"name": "meal_time", "required": False, "description": "用餐时段（breakfast/lunch/dinner）"},
-            {"name": "reviewed_at", "required": False, "description": "评价时间，格式 YYYY-MM-DD HH:MM:SS"},
+            {"name": "meal_time", "required": False, "description": "用餐时段"},
+            {"name": "reviewed_at", "required": False, "description": "评价时间"},
         ],
     }

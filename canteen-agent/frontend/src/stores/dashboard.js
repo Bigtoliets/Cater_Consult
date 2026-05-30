@@ -1,10 +1,9 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import { getDailySummary, getComplaintRadar } from "../api";
+import { getDailySummary } from "../api";
 
 export const useDashboardStore = defineStore("dashboard", () => {
   const summary = ref(null);
-  const radarData = ref([]);
   const loading = ref(false);
   const error = ref(null);
 
@@ -21,14 +20,5 @@ export const useDashboardStore = defineStore("dashboard", () => {
     }
   }
 
-  async function fetchRadar(date) {
-    try {
-      const res = await getComplaintRadar(date);
-      radarData.value = res.data.radar;
-    } catch (e) {
-      // silent
-    }
-  }
-
-  return { summary, radarData, loading, error, fetchSummary, fetchRadar };
+  return { summary, loading, error, fetchSummary };
 });

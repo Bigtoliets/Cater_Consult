@@ -1,36 +1,23 @@
-"""LangGraph 工作流 — 4 节点单条流水线"""
+"""LangGraph 工作流 —— 菜品级 3 节点流水线"""
 from langgraph.graph import StateGraph, END
 
 from app.state import AgentState
-from app.nodes.cleansing import review_cleansing
-from app.nodes.routing import dish_routing
-from app.nodes.rag_retrieval import rag_retrieval
-from app.nodes.action_report import action_report
-
-
-def should_route_to_rag(state: AgentState) -> str:
-    """正面评价或无有效内容 → 跳过 RAG 直接结束"""
-    review = state.get("filtered_review", {})
-    if not review or review.get("sentiment") == "positive":
-        return "end"
-    return "rag"
+from app.nodes.keyword_aggregation import keyword_aggregation
+from app.nodes.rag_reranked import rag_reranked
+from app.nodes.llm_fusion import llm_fusion
 
 
 def build_workflow() -> StateGraph:
     workflow = StateGraph(AgentState)
 
-    workflow.add_node("cleansing", review_cleansing)
-    workflow.add_node("routing", dish_routing)
-    workflow.add_node("rag", rag_retrieval)
-    workflow.add_node("report", action_report)
+    workflow.add_node("keyword_aggregation", keyword_aggregation)
+    workflow.add_node("rag_reranked", rag_reranked)
+    workflow.add_node("llm_fusion", llm_fusion)
 
-    workflow.set_entry_point("cleansing")
-    workflow.add_edge("cleansing", "routing")
-
-    workflow.add_conditional_edges("routing", should_route_to_rag, {"rag": "rag", "end": END})
-
-    workflow.add_edge("rag", "report")
-    workflow.add_edge("report", END)
+    workflow.set_entry_point("keyword_aggregation")
+    workflow.add_edge("keyword_aggregation", "rag_reranked")
+    workflow.add_edge("rag_reranked", "llm_fusion")
+    workflow.add_edge("llm_fusion", END)
 
     return workflow
 

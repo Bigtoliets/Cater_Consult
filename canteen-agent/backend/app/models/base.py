@@ -1,15 +1,18 @@
 """SQLAlchemy 基础"""
+from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import settings
 
-# 将同步 URL 转为异步 URL
 _sync_url = settings.DATABASE_URL
 _async_url = _sync_url.replace("mysql+pymysql://", "mysql+aiomysql://")
 
 engine = create_async_engine(_async_url, echo=False, pool_size=10, max_overflow=20)
 AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+sync_engine = create_engine(_sync_url, echo=False, pool_size=5, max_overflow=10)
+SyncSessionLocal = sessionmaker(sync_engine, class_=Session, expire_on_commit=False)
 
 
 class Base(DeclarativeBase):

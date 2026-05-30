@@ -1,107 +1,114 @@
-"""Agent 微服务入口（FastAPI）— 逐条独立流水线"""
+"""Agent 微服务入口（FastAPI）—— 菜品级批量处理 + 自进化闭环"""
 import json
 import asyncio
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 
 from app.workflow import agent_workflow
 from app.state import AgentState, new_decision_id
-from app.config import agent_settings
 from app.utils.llm import get_llm
-from app.utils.milvus_client import get_milvus_store, write_to_standard
+from app.utils.milvus_client import write_to_standard
 from app.prompts.templates import CHAT_SYSTEM_PROMPT
 
-app = FastAPI(title="Canteen Agent Engine", version="3.0.0")
+app = FastAPI(title="Canteen Agent Engine", version="4.1.0")
 
 
-class ReviewInput(BaseModel):
-    raw_reviews: List[Dict]
+class DishAnalyzeInput(BaseModel):
+    dish_name: str
+    dish_id: str
+    reviews: List[Dict]
+    keyword_weights: Optional[Dict[str, float]] = None
+
+
+class DishAnalyzeResult(BaseModel):
+    dish_name: str
+    dish_id: str
+    decision_id: Optional[str] = None
+    improvement_summary: Optional[str] = None
+    improvement_detail: Optional[str] = None
+    human_review_required: bool
 
 
 class ChatInput(BaseModel):
     question: str
 
 
-class ReviewResult(BaseModel):
-    decision_id: Optional[str] = None
-    dish_name: str
-    dish_id: str
-    corrective_action: Optional[str] = None
-    human_review_required: bool
+@app.post("/agent/analyze_dish")
+async def analyze_dish(input_data: DishAnalyzeInput) -> DishAnalyzeResult:
+    initial_state: AgentState = {
+        "dish_name": input_data.dish_name,
+        "dish_id": input_data.dish_id,
+        "reviews": input_data.reviews,
+        "keyword_summary": "",
+        "keyword_weights": input_data.keyword_weights or {},
+        "gold_context": "",
+        "standard_context": "",
+        "reranked_knowledge": "",
+        "improvement_summary": "",
+        "improvement_detail": "",
+        "decision_id": "",
+        "human_review_required": False,
+    }
 
+    try:
+        result = await agent_workflow.ainvoke(initial_state)
+        summary = result.get("improvement_summary", "")
+        detail = result.get("improvement_detail", "")
 
-@app.post("/agent/analyze")
-async def analyze_reviews(input_data: ReviewInput) -> List[ReviewResult]:
-    """逐条处理：每条评论独立走 cleansing→routing→rag→report"""
-    results = []
+        decision_id = ""
+        if detail:
+            decision_id = new_decision_id()
+            content_to_store = f"【菜品：{input_data.dish_name}】{summary}\n\n{detail}"
+            asyncio.create_task(
+                write_to_standard(decision_id, input_data.dish_name, content_to_store)
+            )
 
-    for review in input_data.raw_reviews:
-        decision_id = ""  # 只有差评才分配
-
-        initial_state: AgentState = {
-            "review": review,
-            "filtered_review": {},
-            "dish_info": {},
-            "risk_level": 1,
-            "knowledge_context": "",
-            "decision_id": decision_id,
-            "corrective_action": None,
-            "human_review_required": False,
-        }
-
-        try:
-            result = await agent_workflow.ainvoke(initial_state)
-            corrective_action = result.get("corrective_action")
-            dish_info = result.get("dish_info", {})
-
-            # 只对差评生成 decision_id + 入库
-            if corrective_action:
-                decision_id = new_decision_id()
-                dish_name = dish_info.get("dish_name", "未知菜品")
-                asyncio.create_task(
-                    write_to_standard(decision_id, dish_name, corrective_action)
-                )
-
-            results.append(ReviewResult(
-                decision_id=decision_id or None,
-                dish_name=dish_info.get("dish_name", "未知菜品"),
-                dish_id=str(dish_info.get("dish_id", "UNKNOWN")),
-                corrective_action=corrective_action,
-                human_review_required=result.get("human_review_required", False),
-            ))
-        except Exception:
-            results.append(ReviewResult(
-                decision_id=None,
-                dish_name="处理失败",
-                dish_id="UNKNOWN",
-                corrective_action=None,
-                human_review_required=True,
-            ))
-
-    return results
+        return DishAnalyzeResult(
+            dish_name=input_data.dish_name,
+            dish_id=input_data.dish_id,
+            decision_id=decision_id or None,
+            improvement_summary=summary or None,
+            improvement_detail=detail or None,
+            human_review_required=result.get("human_review_required", False),
+        )
+    except Exception:
+        return DishAnalyzeResult(
+            dish_name=input_data.dish_name,
+            dish_id=input_data.dish_id,
+            decision_id=None,
+            improvement_summary=None,
+            improvement_detail=None,
+            human_review_required=True,
+        )
 
 
 @app.post("/agent/chat")
 async def agent_chat(input_data: ChatInput):
-    """智能问答（SSE 流式 + 双库 RAG）"""
     from fastapi.responses import StreamingResponse
     from app.utils.milvus_client import search_with_score
+
+    GOLD_W = 0.7
+    STD_W = 0.3
 
     async def event_stream():
         try:
             gold_results = await search_with_score("gold_collection", input_data.question, k=2)
             standard_results = await search_with_score("standard_collection", input_data.question, k=2)
 
+            all_items = []
+            for r in gold_results:
+                all_items.append({"content": r["content"], "score": r["score"], "source": "GOLD", "w": r["score"] * GOLD_W})
+            for r in standard_results:
+                all_items.append({"content": r["content"], "score": r["score"], "source": "STANDARD", "w": r["score"] * STD_W})
+            all_items.sort(key=lambda x: x["w"], reverse=True)
+
             experience_context = ""
-            if gold_results:
-                experience_context += "\n【🏅 金标经验】\n"
-                for r in gold_results:
-                    experience_context += f"[GOLD] {r['content'][:400]}\n"
-            if standard_results:
-                experience_context += "\n【📋 普通经验】\n"
-                for r in standard_results:
-                    experience_context += f"[STANDARD] {r['content'][:400]}\n"
+            if all_items:
+                experience_context += "\n历史经验（按权重重排序）：\n"
+                for item in all_items:
+                    tag = "🏅金标" if item["source"] == "GOLD" else "📋普通"
+                    experience_context += f"[{tag}] [加权分{item['w']:.2f}] {item['content'][:400]}\n"
 
             system_prompt = CHAT_SYSTEM_PROMPT
             if experience_context:

@@ -5,17 +5,12 @@ const api = axios.create({
   timeout: 30000,
 });
 
-// ===== 日报看板 =====
 export const getDailySummary = (date) =>
   api.get("/dashboard/summary", { params: { target_date: date } });
 
 export const getSummaryTable = (date) =>
   api.get("/dashboard/summary-table", { params: { target_date: date } });
 
-export const getComplaintRadar = (date) =>
-  api.get("/dashboard/radar", { params: { target_date: date } });
-
-// ===== 菜品诊断 =====
 export const getDishDiagnosis = (dishId) =>
   api.get(`/dishes/${dishId}/diagnosis`);
 
@@ -28,12 +23,20 @@ export const dispatchDiagnosis = (dishId) =>
 export const rejectDiagnosis = (dishId) =>
   api.post(`/dishes/${dishId}/diagnosis/reject`);
 
-// ===== 系统配置 =====
+export const promoteDecision = (decisionId) =>
+  api.post("/config/promote", { decision_id: decisionId });
+
 export const getConfigs = (scope, scopeId) =>
   api.get("/config/", { params: { scope, scope_id: scopeId } });
 
 export const updateConfig = (configKey, configValue, scope) =>
   api.put(`/config/${configKey}`, configValue, { params: { scope } });
+
+export const getKeywordWeights = () =>
+  api.get("/config/keyword-weights");
+
+export const updateKeywordWeights = (weights) =>
+  api.put("/config/keyword-weights", { weights, description: "关键词维度权重" });
 
 export const getDishKnowledge = (dishId, dimension) =>
   api.get(`/config/knowledge/dish/${dishId}`, { params: { dimension } });
@@ -41,7 +44,6 @@ export const getDishKnowledge = (dishId, dimension) =>
 export const createSOPEntry = (data) =>
   api.post("/config/knowledge", data);
 
-// ===== 数据上传（两段式：预览 → 确认） =====
 export const uploadPreview = (file) => {
   const formData = new FormData();
   formData.append("file", file);
@@ -59,17 +61,11 @@ export const uploadConfirm = (file, selectedIndices) => {
   });
 };
 
-// ===== 双库迁移 =====
-export const promoteDecision = (decisionId) =>
-  api.post("/config/promote", { decision_id: decisionId });
-
-// ===== 智能问答 =====
 export const chatQuery = (question) =>
   api.post("/chat/query", null, { params: { question } });
 
 export const getPresetQuestions = () =>
   api.get("/chat/presets");
 
-// ===== 健康检查 =====
 export const healthCheck = () =>
   api.get("/health");

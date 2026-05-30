@@ -1,4 +1,4 @@
-"""Agent 状态定义（TypedDict）"""
+"""Agent 状态定义（TypedDict）—— 菜品级批量处理"""
 from typing import TypedDict, List, Dict, Optional
 import uuid
 
@@ -8,18 +8,15 @@ def new_decision_id() -> str:
 
 
 class AgentState(TypedDict):
-    # === 原始数据（单条） ===
-    review: Dict                       # 单条评价 {raw_text, stall_name, dish_name_raw, ...}
-    filtered_review: Dict              # 清洗后的单条结构化结果
-
-    # === 菜品消歧 ===
-    dish_info: Dict                    # dish_id, dish_name, stall_name, match_confidence...
-
-    # === 检索 ===
-    risk_level: int
-    knowledge_context: str             # 双库检索拼接结果（[GOLD] / [STANDARD] 标签）
-
-    # === 输出 ===
-    decision_id: str                   # 唯一决策ID，用于后续飞升
-    corrective_action: Optional[str]
+    dish_name: str
+    dish_id: str
+    reviews: List[Dict]
+    keyword_summary: str
+    keyword_weights: Dict[str, float]
+    gold_context: str
+    standard_context: str
+    reranked_knowledge: str
+    improvement_summary: str
+    improvement_detail: str
+    decision_id: str
     human_review_required: bool

@@ -1,0 +1,217 @@
+阶段①：数据上传（两段式：预览 → 确认导入）
+入口：用户在系统配置页 /config → 数据源 tab → 拖拽 CSV/Excel 文件
+
+Step 1 — 预览 POST /api/v1/upload/preview
+
+text
+
+ETLService._load_rows()
+  ├─ chardet 自动检测文件编码
+  ├─ CSV → csv.reader 解析
+  └─ Excel → openpyxl (xlsx) / xlrd (xls) 解析
+       ↓
+ETLService._build_col_map()
+  └─ 表头列名 → Review 表字段映射：
+     raw_text(必填), stall_name(必填), dish_name_raw, source, rating, meal_time, reviewed_at
+       ↓
+ETLService._parse_row() × N
+  └─ 逐行校验必填字段 → 返回全量数据（不写入数据库）
+返回给前端展示表格，用户勾选要导入的行。
+
+Step 2 — 确认导入 POST /api/v1/upload/confirm
+
+text
+
+ETLService.import_selected()
+  └─ 只将用户勾选的行 → db.add(Review(**data)) → db.flush()
+       ↓
+返回 { imported: N, review_ids: [...] }
+阶段②：预处理（关键词情感分析 + 菜品匹配 + 风险评分）
+触发：upload/confirm 返回后，同步调用 process_new_reviews(db, review_ids)
+
+这是纯规则引擎，不调 LLM，速度快、成本低：
+
+text
+
+process_new_reviews()
+  │
+  ├─ _analyze_sentiment(text)
+  │   └─ 两套关键词词典（POSITIVE_WORDS / NEGATIVE_WORDS）
+  │       逐词计数 → pos_score vs neg_score → 判定 sentiment
+  │
+  ├─ _extract_dimensions(text)
+  │   └─ 8 个维度 × 各自关键词：
+  │       口味(咸/淡/辣/腥/油腻…), 卫生(头发/虫子/变质…),
+  │       分量(少/不够吃…), 温度(凉/冷…), 口感(硬/柴/生…),
+  │       价格(贵/不值…), 服务(态度差/慢…), 安全(拉肚子/中毒/过敏…)
+  │       → 每个维度最多命中一次 → [{dimension, keyword}, …]
+  │
+  ├─ _calc_risk_level(sentiment, dimensions, text)
+  │   └─ 中性=1 → 差评基础=2 → 口味/口感投诉=3 → 安全/卫生=5
+  │       紧急词(中毒/过敏/拉肚子/腹泻/呕吐/医院/投诉/举报) → 直接=5
+  │
+  └─ match_dish(db, dish_name_raw, stall_name)
+      └─ 先精确匹配 Dish.name → 再模糊匹配(包含关系) → 失败返回 None
+每条 Review 写入后得到：sentiment, dimensions, risk_level, dish_id。
+
+阶段③：Agent 分析（LangGraph 4 节点流水线）
+入口：调用 Agent 微服务 POST /agent/analyze，传入 {raw_reviews: [...]}
+
+Agent 以 逐条独立 的方式运行。每条评价走完整的 4 节点流水线：
+
+text
+
+┌──────────────┐      ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+│ ① Cleansing  │ ───→ │ ② Routing    │ ───→ │ ③ RAG        │ ───→ │ ④ Report     │
+│ 清洗+结构化   │      │ 菜品消歧      │      │ 双库经验检索   │      │ 生成整改单    │
+└──────────────┘      └──────┬───────┘      └──────────────┘      └──────────────┘
+                             │
+                      正面评价 / 无效
+                             │
+                             ↓
+                           END（跳过 RAG+Report）
+节点①：Review Cleansing
+text
+
+1. 前置拼接："【菜品：红烧肉】肉太硬咬不动"
+2. 规则快速过滤：
+   - 空文本 / <2字符 → 无效
+   - 纯表情/单字("...","👍","好","嗯",".") → 无效
+3. LLM 有效性判断：
+   REVIEW_FILTER_PROMPT → 返回 VALID / INVALID
+4. LLM 结构化提取：
+   REVIEW_ANALYSIS_PROMPT → JSON {
+     sentiment: "negative",
+     dimensions: [{"dimension":"口感-肉太柴","severity":4}],
+     severity: 4,
+     summary: "红烧肉太硬咬不动"
+   }
+节点②：Dish Routing（三级梯次消歧）
+text
+
+L2: Milvus 向量匹配
+  └─ 将评价文本向量化 → 在 dish_index 中 similarity_search(k=3)
+     置信度 = 0.7 + (1.0 - distance) × 0.25
+     置信度 ≥ 0.6 → 命中，返回 dish_id + dish_name
+     ↓ 失败则降级
+
+L3: LLM 语义匹配
+  └─ DISH_ROUTING_PROMPT(meal_time, stall_name, review_text, daily_menu)
+     → LLM 推断 JSON {dish_id, dish_name, confidence, reason}
+     ↓ 失败则降级
+
+失败兜底: dish_id="UNKNOWN", risk_level=4（升高风险）
+节点③：RAG 双库经验检索
+text
+
+短路条件：
+  - sentiment == "positive" → 直接跳过
+  - dish_id == "UNKNOWN"   → 直接跳过
+
+查询构造：dish_name + summary
+  ├─ gold_collection.search(k=3)    → [GOLD] 标签
+  └─ standard_collection.search(k=3) → [STANDARD] 标签
+       ↓
+拼接为 knowledge_context：
+  ## 历史相似客诉处理经验
+  ### 🏅 金标经验（管理层认证，请重点参考）
+  [GOLD] [相似度 0.92] 上次红烧肉太硬的处理方案是延长炖煮时间...
+  ### 📋 普通经验（供辅助借鉴）
+  [STANDARD] [相似度 0.78] 建议检查高压锅压力阀门...
+节点④：Action Report（LLM 生成整改单）
+text
+
+1. 风险判定：
+   - 紧急词检测(中毒/过敏/拉肚子/腹泻/呕吐/异物/头发/虫子/变质)
+     → 有 → human_review_required = true
+   - dish_id == "UNKNOWN" → human_review_required = true
+
+2. LLM 生成：
+   CORRECTIVE_ACTION_PROMPT(dish_name, review_samples, experience_context)
+   → 固定模板输出：
+
+   【品控异常处理单】
+   ■ 问题定位：红烧肉口感偏硬，顾客反馈"咬不动"
+   ■ 根因推测：结合金标经验，推测今日炖煮时间不足...
+   ■ 操作指令：
+     1. 抽检当前批次红烧肉，用测温计确认中心温度
+     2. 延长高压锅压制时间10分钟
+     3. 出锅前由当班主厨试吃确认
+   ■ 验证标准：后厨主管抽检确认口感达标
+阶段④：结果沉淀
+Agent 分析完毕后，/agent/analyze 接口返回 List[ReviewResult]。差评的整改单会异步写入 Milvus：
+
+text
+
+asyncio.create_task(
+    write_to_standard(decision_id, dish_name, corrective_action)
+)
+  └─ 生成 decision_id（DEC-xxxx 格式）
+  └─ embedding 模型向量化整改单内容
+  └─ 写入 standard_collection：
+       [decision_id, "【菜品：红烧肉】\n整改单全文", vector]
+这个写入是 静默沉淀——新生成的整改单自动成为 standard_collection 中的一条普通经验，后续相同菜品的差评能检索到它。
+
+阶段⑤：日报生成（查询 + 实时计算）
+入口：GET /api/v1/dashboard/summary?target_date=YYYY-MM-DD
+
+text
+
+1. 先查 DailySummary 缓存表 → 命中直接返回
+2. 缓存未命中 → 实时计算：
+   ├─ 查当日所有 Review (is_valid=true)
+   ├─ 统计 pos/neu/neg 数量和比例
+   ├─ 按菜品聚合差评排行 → top_bad TOP3
+   ├─ 按菜品聚合好评排行 → top_good TOP3
+   └─ _generate_summary() 实时生成 AI 摘要文本（规则拼接，非 LLM）
+改进摘要表：GET /api/v1/dashboard/summary-table
+
+text
+
+查当日 Diagnosis 表中有 corrective_action 的记录
+  → 按 dish_id 分组聚合
+  → 前端可展开查看每条子决策，支持"飞升金标"操作
+飞升金标：POST /api/v1/config/promote {decision_id}
+
+text
+
+promote_to_gold(decision_id, modified_content?)
+  1. 从 standard_collection 按 decision_id 精确查询
+  2. 若传了 modified_content → 重新向量化
+  3. 写入 gold_collection
+  4. 从 standard_collection 删除该条
+  5. 返回 { status: "promoted" }
+阶段⑥：智能问答（SSE 流式）
+入口：POST /api/v1/chat/query?question=...
+
+不走 Agent 微服务——后端直接调 Milvus + LLM：
+
+text
+
+1. 双库检索：
+   gold_collection.search(question, k=2)    → [GOLD] 经验
+   standard_collection.search(question, k=2) → [STANDARD] 经验
+
+2. 拼接 system_prompt：
+   CHAT_SYSTEM_PROMPT + "当前查询到的历史经验：[GOLD]… [STANDARD]…"
+
+3. LLM 流式输出：
+   llm.astream(question) → SSE: data: {"content":"..."}\n\n
+   最后: data: {"done":true}\n\n
+定时任务（Celery）
+任务	周期	当前状态
+generate_daily_summary	每小时（生产改为每天20:00）	桩代码 — 仅打日志，未实际写入 DailySummary
+cleanup_old_data	每天	桩代码 — 仅打日志
+关键数据流总结
+text
+
+用户上传 CSV
+  → ETLService 解析 + 必填校验
+  → 写入 Review 表
+  → process_new_reviews: 关键词情感/维度/风险/菜品匹配
+  → (可选的 Agent 分析) LangGraph 4节点 → 整改单
+  → 整改单异步写入 Milvus standard_collection
+  → 人工审核后飞升 → gold_collection
+  → 日报通过 Review + Diagnosis 表实时查询
+  → 问答通过 Milvus 双库 RAG + LLM 流式返回
+有一个值得注意的架构细节：backend/app/agent/ 目录下存了一份 agent 微服务的完整代码副本。这是为了让 backend 的 chat 和 promote 接口能不经过 Agent 微服务直接操作 Milvus——这是一种内嵌式复用，避免额外的网络调用。实际的 Agent 流水线（4 节点分析）仍然通过 HTTP 调用独立的 agent 容器。

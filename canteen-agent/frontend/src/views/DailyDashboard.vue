@@ -11,7 +11,6 @@
     </div>
 
     <el-row :gutter="20" v-loading="loading">
-      <!-- 全局情绪指数 -->
       <el-col :span="10">
         <el-card shadow="hover">
           <template #header>全局情绪指数</template>
@@ -25,7 +24,6 @@
         </el-card>
       </el-col>
 
-      <!-- 红黑榜 -->
       <el-col :span="14">
         <el-card shadow="hover">
           <template #header>红黑榜</template>
@@ -53,35 +51,40 @@
       </el-col>
     </el-row>
 
-    <el-row :gutter="20" style="margin-top: 20px">
-      <!-- 槽点雷达图 -->
-      <el-col :span="12">
-        <el-card shadow="hover">
-          <template #header>槽点雷达图</template>
-          <v-chart :option="radarChartOption" style="height: 300px" v-if="radarData.length" />
-          <el-empty v-else description="暂无槽点数据" />
-        </el-card>
-      </el-col>
-
-      <!-- 核心改进摘要表格（可展开） -->
-      <el-col :span="12">
+    <el-row style="margin-top: 20px">
+      <el-col :span="24">
         <el-card shadow="hover">
           <template #header>📝 核心改进摘要（AI 融合决策）</template>
-          <el-table :data="summaryTable" size="small" v-if="summaryTable.length" max-height="350">
+          <el-table :data="summaryTable" size="small" v-if="summaryTable.length" max-height="600">
             <el-table-column type="expand">
               <template #default="{ row }">
-                <div v-for="(d, i) in row.decisions" :key="i" style="display:flex;align-items:center;justify-content:space-between;padding:6px 12px;border-bottom:1px dashed #ebeef5">
-                  <span style="flex:1;font-size:12px;color:#606266">{{ d.corrective_action?.slice(0, 120) }}{{ d.corrective_action?.length > 120 ? '...' : '' }}</span>
-                  <el-button type="success" size="small" :icon="Star" :disabled="!d.decision_id" @click="handleLike(d.decision_id)" style="margin-left:8px">飞升金标</el-button>
+                <div class="expand-detail">
+                  <div class="corrective-content" v-html="renderMarkdown(row.corrective_action || '暂无详情')" />
                 </div>
-                <el-empty v-if="!row.decisions?.length" description="无子决策" :image-size="40" />
               </template>
             </el-table-column>
-            <el-table-column prop="dish_name" label="菜品" width="90" />
-            <el-table-column prop="negative_count" label="决策数" width="65" align="center" />
-            <el-table-column prop="corrective_summary" label="AI 融合摘要" show-overflow-tooltip min-width="180" />
+            <el-table-column prop="dish_name" label="菜品" width="110" />
+            <el-table-column prop="summary" label="一句话摘要" min-width="300">
+              <template #default="{ row }">
+                <span class="summary-cell">{{ row.summary || '暂无摘要' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="110" align="center">
+              <template #default="{ row }">
+                <el-tag :type="row.human_review_required ? 'danger' : 'success'" size="small">
+                  {{ row.human_review_required ? '需复核' : 'AI已分析' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="120" align="center">
+              <template #default="{ row }">
+                <el-button type="success" size="small" :icon="Star" :disabled="!row.decision_id" @click="handleLike(row.decision_id)">
+                  飞升金标
+                </el-button>
+              </template>
+            </el-table-column>
           </el-table>
-          <el-empty v-else description="暂无数据" :image-size="60" />
+          <el-empty v-else description="暂无 AI 改进摘要数据" :image-size="60" />
         </el-card>
       </el-col>
     </el-row>
@@ -91,7 +94,7 @@
 <script setup>
 import { ref, computed, onMounted, watch } from "vue";
 import { use } from "echarts/core";
-import { PieChart, RadarChart } from "echarts/charts";
+import { PieChart } from "echarts/charts";
 import { TitleComponent, TooltipComponent, LegendComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import VChart from "vue-echarts";
@@ -99,8 +102,9 @@ import { useDashboardStore } from "../stores/dashboard";
 import { getSummaryTable, promoteDecision } from "../api";
 import { Star } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
+import { marked } from "marked";
 
-use([PieChart, RadarChart, TitleComponent, TooltipComponent, LegendComponent, CanvasRenderer]);
+use([PieChart, TitleComponent, TooltipComponent, LegendComponent, CanvasRenderer]);
 
 const store = useDashboardStore();
 const summaryTable = ref([]);
@@ -118,23 +122,16 @@ watch(selectedDate, (newVal) => {
 });
 
 const summary = computed(() => store.summary);
-const radarData = computed(() => store.radarData);
 
-const topGoodList = computed(() => {
-  if (!summary.value?.top_good) return [];
-  return summary.value.top_good.map((item) => ({
-    dish_name: item.dish_name || `菜品 #${item.dish_id || "?"}`,
-    count: item.count,
-  }));
-});
+const topGoodList = computed(() => (summary.value?.top_good || []).map(item => ({
+  dish_name: item.dish_name || `菜品 #${item.dish_id || "?"}`,
+  count: item.count,
+})));
 
-const topBadList = computed(() => {
-  if (!summary.value?.top_bad) return [];
-  return summary.value.top_bad.map((item) => ({
-    dish_name: item.dish_name || `菜品 #${item.dish_id || "?"}`,
-    count: item.count,
-  }));
-});
+const topBadList = computed(() => (summary.value?.top_bad || []).map(item => ({
+  dish_name: item.dish_name || `菜品 #${item.dish_id || "?"}`,
+  count: item.count,
+})));
 
 const sentimentChartOption = computed(() => ({
   tooltip: { trigger: "item" },
@@ -150,20 +147,9 @@ const sentimentChartOption = computed(() => ({
   }],
 }));
 
-const radarChartOption = computed(() => ({
-  tooltip: {},
-  radar: {
-    indicator: radarData.value.map(d => ({ name: d.name, max: Math.max(d.value * 1.5, 10) })),
-  },
-  series: [{
-    type: "radar",
-    data: [{ value: radarData.value.map(d => d.value), name: "投诉分布", areaStyle: { color: "rgba(245,108,108,0.3)" } }],
-  }],
-}));
-
 async function loadData(dateStr) {
   loading.value = true;
-  await Promise.all([store.fetchSummary(dateStr), store.fetchRadar(dateStr), fetchSummaryTable(dateStr)]);
+  await Promise.all([store.fetchSummary(dateStr), fetchSummaryTable(dateStr)]);
   loading.value = false;
 }
 
@@ -179,12 +165,18 @@ async function handleLike(decisionId) {
     const res = await promoteDecision(decisionId);
     if (res.data?.status === "promoted") {
       ElMessage.success("🎉 已飞升至金标准库！");
+      fetchSummaryTable(selectedDate.value);
     } else {
       ElMessage.warning("未找到该决策");
     }
   } catch (e) {
     ElMessage.error("飞升失败：" + (e.response?.data?.detail || e.message));
   }
+}
+
+function renderMarkdown(text) {
+  if (!text) return "";
+  return marked(text);
 }
 
 onMounted(() => loadData(selectedDate.value));
@@ -203,9 +195,22 @@ onMounted(() => loadData(selectedDate.value));
   justify-content: space-around;
   margin-top: 15px;
 }
-.ai-summary {
+.summary-cell {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #303133;
+  font-weight: 500;
+}
+.expand-detail {
+  padding: 12px 8px;
+  font-size: 13px;
   line-height: 1.8;
-  color: #606266;
-  font-size: 14px;
+}
+.corrective-content {
+  background: #fafafa;
+  padding: 16px;
+  border-radius: 4px;
 }
 </style>

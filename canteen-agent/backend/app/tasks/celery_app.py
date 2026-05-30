@@ -7,7 +7,7 @@ celery_app = Celery(
     "canteen_agent",
     broker=settings.RABBITMQ_URL,
     backend=settings.REDIS_URL,
-    include=["app.tasks.periodic_tasks"],
+    include=["app.tasks.periodic_tasks", "app.tasks.consumer"],
 )
 
 celery_app.conf.update(
@@ -19,11 +19,11 @@ celery_app.conf.update(
     beat_schedule={
         "generate-daily-summary": {
             "task": "app.tasks.periodic_tasks.generate_daily_summary",
-            "schedule": 3600.0,  # 每小时执行一次（生产环境改为每天 20:00）
+            "schedule": 3600.0,
         },
         "cleanup-old-reviews": {
             "task": "app.tasks.periodic_tasks.cleanup_old_data",
-            "schedule": 86400.0,  # 每天执行一次
+            "schedule": 86400.0,
         },
     },
 )

@@ -87,12 +87,16 @@
           </div>
         </el-card>
 
-        <el-card shadow="hover" style="margin-top: 16px">
-          <template #header>📊 快速统计</template>
-          <el-statistic title="今日评价数" :value="125" />
-          <el-statistic title="活跃档口" :value="15" />
-          <el-statistic title="待处理差评" :value="8" />
-        </el-card>
+        <div class="quick-stats">
+          <div class="stat-item">
+            <span class="stat-label">💡 基于双库 RAG 检索</span>
+            <span style="font-size:12px;color:#909399">金标 × 0.7 · 普通 × 0.3</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">📚 可查询历史决策原因</span>
+            <span style="font-size:12px;color:#909399">如"为什么红烧肉要延长炖煮？"</span>
+          </div>
+        </div>
       </el-col>
     </el-row>
   </div>
@@ -307,5 +311,27 @@ function renderMarkdown(text) {
 
 .data-card {
   font-size: 13px;
+}
+
+.quick-stats {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.stat-item {
+  padding: 10px 12px;
+  background: #f5f7fa;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stat-label {
+  font-size: 14px;
+  color: #303133;
+  font-weight: 500;
 }
 </style>
