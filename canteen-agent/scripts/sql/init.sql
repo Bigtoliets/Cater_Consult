@@ -145,12 +145,15 @@ ON DUPLICATE KEY UPDATE content=VALUES(content);
 -- -----------------------------------------------------------
 CREATE TABLE IF NOT EXISTS diagnoses (
     id                    INT AUTO_INCREMENT PRIMARY KEY,
-    dish_id               INT NOT NULL COMMENT '菜品ID',
+    review_id             INT          COMMENT '关联的原始评价ID',
+    dish_id               INT          COMMENT '菜品ID(可能为空)',
     status                VARCHAR(20) DEFAULT 'pending' COMMENT '状态',
     conflict_type         VARCHAR(50) COMMENT '冲突类型',
     confidence            DOUBLE DEFAULT 0.0 COMMENT '置信度',
     conflict_analysis     JSON        COMMENT '冲突分析',
-    corrective_action     TEXT        COMMENT '整改单内容',
+    decision_id           VARCHAR(50) COMMENT '决策唯一ID(Milvus关联)',
+    summary               VARCHAR(200) COMMENT '一句话改进摘要',
+    corrective_action     TEXT        COMMENT '整改单详细内容',
     human_review_required TINYINT(1) DEFAULT 0,
     human_review_result   VARCHAR(20) COMMENT '人工复核结果',
     triggered_at          DATETIME    COMMENT '触发时间',
