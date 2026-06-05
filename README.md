@@ -192,16 +192,16 @@ Celery Beat 每小时触发
 ## 📸 界面预览
 
 ### 首页仪表盘
-![首页](picture/首页.png)
+![首页](canteen-agent/picture/首页.png)
 
 ### AI 核心改进摘要
-![核心摘要](picture/核心摘要.png)
+![核心摘要](canteen-agent/picture/核心摘要.png)
 
 ### 智能问答（RAG 检索）
-![智能问答](picture/智能问答.png)
+![智能问答](canteen-agent/picture/智能问答.png)
 
 ### 关键词权重配置
-![关键词权重](picture/关键词权重.png)
+![关键词权重](canteen-agent/picture/关键词权重.png)
 
 ---
 
