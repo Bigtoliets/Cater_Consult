@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from typing import Any
 
 from app.models import get_db, SystemConfig, SOPEntry, Dish
+from app.config import settings
 
 router = APIRouter()
 
@@ -17,15 +18,19 @@ class PromoteRequest(BaseModel):
 
 @router.post("/promote")
 async def promote_to_gold(body: PromoteRequest):
-    """将指定 decision_id 从 standard_collection 迁移到 gold_collection（点赞飞升）"""
+    """将指定 decision_id 从 standard_collection 迁移到 gold_collection（飞升金标）"""
+    import httpx
     try:
-        from app.agent.utils.milvus_client import promote_to_gold as do_promote
-        result = await do_promote(body.decision_id, body.modified_content)
-        return result
-    except ImportError:
-        raise HTTPException(status_code=500, detail="Milvus 客户端不可用")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"跨库迁移失败：{str(e)}")
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{settings.AGENT_INTERNAL_URL}/agent/promote",
+                json={"decision_id": body.decision_id, "modified_content": body.modified_content},
+            )
+            if resp.status_code != 200:
+                raise HTTPException(status_code=502, detail=f"Agent 返回 {resp.status_code}")
+            return resp.json()
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Agent 微服务未启动 (端口 8001)")
 
 
 class ConfigUpdate(BaseModel):

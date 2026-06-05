@@ -83,6 +83,18 @@ async def analyze_dish(input_data: DishAnalyzeInput) -> DishAnalyzeResult:
         )
 
 
+class PromoteInput(BaseModel):
+    decision_id: str
+    modified_content: str | None = None
+
+
+@app.post("/agent/promote")
+async def agent_promote(input_data: PromoteInput):
+    """飞升金标：从 standard_collection 迁移到 gold_collection"""
+    from app.utils.milvus_client import promote_to_gold
+    return await promote_to_gold(input_data.decision_id, input_data.modified_content)
+
+
 @app.post("/agent/chat")
 async def agent_chat(input_data: ChatInput):
     from fastapi.responses import StreamingResponse

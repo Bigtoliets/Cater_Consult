@@ -1,0 +1,123 @@
+version: '3.8'
+
+services:
+  # ================= 业务基础中间件 =================
+  mysql-canteen:
+    image: mysql:latest
+    container_name: mysql-canteen
+    restart: always
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: "524007"
+      MYSQL_DATABASE: "canteens"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - app-network
+
+  redis-canteen:
+    image: docker.m.daocloud.io/redis:latest
+    container_name: redis-canteen
+    restart: always
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass 524007
+    volumes:
+      - redis_data:/data
+    networks:
+      - app-network
+
+  mq-canteen:
+    image: rabbitmq:3.8-management
+    container_name: mq-canteen
+    restart: always
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: "admin"
+      RABBITMQ_DEFAULT_PASS: "524007"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - app-network
+
+  # ================= Milvus 向量数据库栈 =================
+  etcd-canteen:
+    image: quay.io/coreos/etcd:v3.5.16
+    container_name: etcd-canteen
+    restart: always
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd-data
+    volumes:
+      - etcd_data:/etcd-data
+    networks:
+      - app-network
+
+  minio-canteen:
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    container_name: minio-canteen
+    restart: always
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin"
+    command: minio server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - app-network
+
+  milvus-canteen:
+    image: milvusdb/milvus:v2.5.3
+    container_name: milvus-canteen
+    restart: always
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    environment:
+      - ETCD_ENDPOINTS=etcd-canteen:2379
+      - MINIO_ADDRESS=minio-canteen:9000
+    depends_on:
+      - etcd-canteen
+      - minio-canteen
+    volumes:
+      - milvus_data:/var/lib/milvus
+    networks:
+      - app-network
+
+  attu-canteen:
+    image: zilliz/attu:latest
+    container_name: attu-canteen
+    restart: always
+    ports:
+      - "8000:3000"
+    environment:
+      - MILVUS_URL=milvus-canteen:19530
+    depends_on:
+      - milvus-canteen
+    networks:
+      - app-network
+
+# ================= 全局配置 =================
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  redis_data:
+  rabbitmq_data:
+  etcd_data:
+  minio_data:
+  milvus_data:

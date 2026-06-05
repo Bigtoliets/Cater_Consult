@@ -76,11 +76,19 @@
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="120" align="center">
+            <el-table-column label="操作" width="100" align="center">
               <template #default="{ row }">
-                <el-button type="success" size="small" :icon="Star" :disabled="!row.decision_id" @click="handleLike(row.decision_id)">
-                  飞升金标
+                <el-button
+                  v-if="!promotedMap[row.decision_id]"
+                  type="warning"
+                  size="small"
+                  :icon="Star"
+                  :disabled="!row.decision_id"
+                  @click="handleLike(row.decision_id)"
+                >
+                  点赞
                 </el-button>
+                <el-tag v-else type="warning" size="small">👍 已推荐</el-tag>
               </template>
             </el-table-column>
           </el-table>
@@ -108,6 +116,20 @@ use([PieChart, TitleComponent, TooltipComponent, LegendComponent, CanvasRenderer
 
 const store = useDashboardStore();
 const summaryTable = ref([]);
+
+function loadPromoted() {
+  try {
+    const raw = localStorage.getItem("promoted_decisions");
+    const ids = raw ? JSON.parse(raw) : [];
+    const map = {};
+    ids.forEach(id => map[id] = true);
+    return map;
+  } catch { return {}; }
+}
+function savePromoted(map) {
+  localStorage.setItem("promoted_decisions", JSON.stringify(Object.keys(map)));
+}
+const promotedMap = ref(loadPromoted());
 
 function todayStr() {
   const d = new Date();
@@ -164,13 +186,17 @@ async function handleLike(decisionId) {
   try {
     const res = await promoteDecision(decisionId);
     if (res.data?.status === "promoted") {
-      ElMessage.success("🎉 已飞升至金标准库！");
-      fetchSummaryTable(selectedDate.value);
-    } else {
+      const next = { ...promotedMap.value, [decisionId]: true };
+      promotedMap.value = next;
+      savePromoted(next);
+      ElMessage.success("已推荐至金标经验库");
+    } else if (res.data?.status === "not_found") {
       ElMessage.warning("未找到该决策");
+    } else {
+      ElMessage.warning(res.data?.status || "操作失败");
     }
   } catch (e) {
-    ElMessage.error("飞升失败：" + (e.response?.data?.detail || e.message));
+    ElMessage.error("推荐失败：" + (e.response?.data?.detail || e.message));
   }
 }
 
