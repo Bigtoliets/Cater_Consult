@@ -1,6 +1,6 @@
 """Milvus 向量库连接工具 — 双库（standard / gold）"""
 from pymilvus import connections, Collection, utility
-from langchain_milvus import MilvusVectorStore
+from langchain_milvus import Milvus
 from app.utils.llm import get_embeddings
 from app.config import agent_settings
 
@@ -20,11 +20,11 @@ def _ensure_pymilvus():
         _pymilvus_connected = True
 
 
-def get_milvus_store(collection_name: str) -> MilvusVectorStore:
+def get_milvus_store(collection_name: str) -> Milvus:
     """获取 Milvus Collection 实例（按名称缓存，langchain 接口）"""
     global _stores
     if collection_name not in _stores:
-        _stores[collection_name] = MilvusVectorStore(
+        _stores[collection_name] = Milvus(
             collection_name=collection_name,
             embedding_function=get_embeddings(),
             connection_args={

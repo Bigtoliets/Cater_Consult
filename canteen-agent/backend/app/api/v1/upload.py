@@ -1,7 +1,7 @@
 """CSV/Excel 文件上传 API — 预览 → 确认 → Redis 队列异步分发 Agent"""
 import json
 import traceback
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from io import BytesIO
@@ -42,7 +42,7 @@ class ConfirmBody(BaseModel):
 @router.post("/confirm")
 async def upload_confirm(
     file: UploadFile = File(...),
-    selected: str = "[]",
+    selected: str = Form("[]"),
     db: AsyncSession = Depends(get_db),
 ):
     ext = _check_ext(file.filename)
@@ -90,6 +90,8 @@ async def upload_confirm(
         }
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="selected 参数格式错误，应为 JSON 数组")
+    except HTTPException:
+        raise
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"导入失败：{str(e)}")

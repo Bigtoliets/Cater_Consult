@@ -6,6 +6,7 @@ from celery.utils.log import get_task_logger
 
 from app.tasks.celery_app import celery_app
 from app.tasks.redis_queue import pop_dish, delete_queue
+from app.config import settings
 
 logger = get_task_logger(__name__)
 
@@ -16,7 +17,7 @@ RETRY_DELAY = 5  # 秒
 async def _analyze_one(group: dict) -> dict:
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(
-            "http://agent:8001/agent/analyze_dish",
+            f"{settings.AGENT_INTERNAL_URL}/agent/analyze_dish",
             json={
                 "dish_name": group["dish_name"],
                 "dish_id": group["dish_id"],
