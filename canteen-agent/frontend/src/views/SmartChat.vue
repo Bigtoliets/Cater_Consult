@@ -120,7 +120,7 @@ onMounted(async () => {
     presetQuestions.value = res.data.presets || [];
   } catch (e) {
     presetQuestions.value = [
-      "查询昨日客诉最多的档口",
+      "查询昨日客诉最多的菜品",
       "生成上周三层食堂的综合改进报告",
       "为什么今天红烧肉评价这么差？",
       "本周食品安全相关投诉汇总",

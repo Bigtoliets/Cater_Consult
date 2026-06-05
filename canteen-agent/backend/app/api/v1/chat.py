@@ -3,7 +3,7 @@ import json
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
-from app.utils.llm import get_llm
+from app.agent.utils.llm import get_llm
 from app.agent.prompts.templates import CHAT_SYSTEM_PROMPT
 
 router = APIRouter()
@@ -62,7 +62,6 @@ async def get_presets():
             "今天哪些菜品差评最多？分析一下原因",
             "上次红烧肉的整改方案有效果吗？",
             "最近一周卫生问题的趋势怎么样？",
-            "对比一下所有档口的差评率排名",
             "昨天收到的客诉中包含哪些安全风险？",
             "为什么将上次红烧肉的方案设为金标？",
         ]

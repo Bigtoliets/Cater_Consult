@@ -7,8 +7,8 @@ from typing import List, Dict, Optional
 
 from app.workflow import agent_workflow
 from app.state import AgentState, new_decision_id
-from app.utils.llm import get_llm
-from app.utils.milvus_client import write_to_standard
+from app.agent.utils.llm import get_llm
+from app.agent.utils.milvus_client import write_to_standard
 from app.prompts.templates import CHAT_SYSTEM_PROMPT
 
 app = FastAPI(title="Canteen Agent Engine", version="4.1.0")
@@ -86,7 +86,7 @@ async def analyze_dish(input_data: DishAnalyzeInput) -> DishAnalyzeResult:
 @app.post("/agent/chat")
 async def agent_chat(input_data: ChatInput):
     from fastapi.responses import StreamingResponse
-    from app.utils.milvus_client import search_with_score
+    from app.agent.utils.milvus_client import search_with_score
 
     GOLD_W = 0.7
     STD_W = 0.3

@@ -2,7 +2,7 @@
 import re
 from app.state import AgentState
 from app.prompts.templates import DISH_IMPROVEMENT_PROMPT
-from app.utils.llm import get_llm
+from app.agent.utils.llm import get_llm
 
 
 async def llm_fusion(state: AgentState) -> AgentState:

@@ -19,9 +19,9 @@
         <template #header>📋 基础信息</template>
         <el-descriptions :column="3" border size="small">
           <el-descriptions-item label="菜品名称">{{ diagnosis.dish?.name || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="所属档口">{{ diagnosis.stall?.name || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="当班主厨">{{ diagnosis.chef?.name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="分类">{{ diagnosis.dish?.category || '-' }}</el-descriptions-item>
           <el-descriptions-item label="单份成本">¥{{ diagnosis.dish?.unit_cost || '0.00' }}</el-descriptions-item>
+          <el-descriptions-item label="售价">¥{{ diagnosis.dish?.price || '0.00' }}</el-descriptions-item>
           <el-descriptions-item label="当日评价">{{ diagnosis.today_stats?.total_reviews || 0 }} 条</el-descriptions-item>
           <el-descriptions-item label="当日差评率">
             <el-tag :type="(diagnosis.today_stats?.negative_rate || 0) > 0.05 ? 'danger' : 'success'">

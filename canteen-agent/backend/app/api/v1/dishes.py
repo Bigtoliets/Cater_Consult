@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
-from app.models import get_db, Dish, Review, Diagnosis, Stall, Chef, Sentiment
+from app.models import get_db, Dish, Review, Diagnosis, Sentiment
 
 router = APIRouter()
 
@@ -13,19 +13,10 @@ async def get_dish_diagnosis(
     dish_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """获取指定菜品诊断报告（含 AI 改进摘要）"""
     dish_result = await db.execute(select(Dish).where(Dish.id == dish_id))
     dish = dish_result.scalar_one_or_none()
     if not dish:
         raise HTTPException(status_code=404, detail="菜品不存在")
-
-    stall_result = await db.execute(select(Stall).where(Stall.id == dish.stall_id))
-    stall = stall_result.scalar_one_or_none()
-
-    chef = None
-    if stall and stall.chef_id:
-        chef_result = await db.execute(select(Chef).where(Chef.id == stall.chef_id))
-        chef = chef_result.scalar_one_or_none()
 
     diag_result = await db.execute(
         select(Diagnosis)
@@ -67,14 +58,6 @@ async def get_dish_diagnosis(
             "unit_cost": dish.unit_cost,
             "price": dish.price,
         },
-        "stall": {
-            "id": stall.id if stall else None,
-            "name": stall.name if stall else None,
-        },
-        "chef": {
-            "id": chef.id if chef else None,
-            "name": chef.name if chef else None,
-        } if chef else None,
         "today_stats": {
             "total_reviews": today_total,
             "negative_count": today_neg,
@@ -146,7 +129,7 @@ async def dispatch_diagnosis(dish_id: int, db: AsyncSession = Depends(get_db)):
     from app.models.models import DiagnosisStatus
     diagnosis.status = DiagnosisStatus.DISPATCHED
     await db.flush()
-    return {"status": "ok", "message": "整改单已下发至后厨"}
+    return {"status": "ok"}
 
 
 @router.post("/{dish_id}/diagnosis/reject")
@@ -160,4 +143,4 @@ async def reject_diagnosis(dish_id: int, db: AsyncSession = Depends(get_db)):
     from app.models.models import DiagnosisStatus
     diagnosis.status = DiagnosisStatus.REJECTED
     await db.flush()
-    return {"status": "ok", "message": "整改单已驳回"}
+    return {"status": "ok"}

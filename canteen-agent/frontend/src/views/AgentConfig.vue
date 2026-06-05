@@ -74,7 +74,7 @@
           </div>
           <template #tip>
             <div class="el-upload__tip">
-              支持 CSV / Excel。表头列名请使用：raw_text（必填）、stall_name（必填）、dish_name_raw、source、rating、meal_time、reviewed_at
+              支持 CSV / Excel。表头列名请使用：raw_text（必填）、dish_name_raw、source、rating、meal_time、reviewed_at
             </div>
           </template>
         </el-upload>
@@ -108,8 +108,7 @@
           >
             <el-table-column type="selection" width="45" />
             <el-table-column type="index" label="#" width="40" />
-            <el-table-column prop="raw_text" label="评价内容" show-overflow-tooltip min-width="200" />
-            <el-table-column prop="stall_name" label="档口" width="150" />
+            <el-table-column prop="raw_text" label="评价内容" show-overflow-tooltip min-width="300" />
           </el-table>
         </div>
 

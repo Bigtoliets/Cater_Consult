@@ -1,8 +1,8 @@
 """Milvus 向量库连接工具 —— 双库（standard / gold）"""
 from pymilvus import connections, Collection
 from langchain_milvus import MilvusVectorStore
-from app.utils.llm import get_embeddings
-from app.config import agent_settings
+from app.agent.utils.llm import get_embeddings
+from app.agent.config import agent_settings
 
 _stores = {}
 _pymilvus_connected = False

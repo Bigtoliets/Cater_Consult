@@ -90,7 +90,7 @@ def _calc_risk_level(sentiment: str, dimensions: list, text: str) -> int:
     return risk
 
 
-async def match_dish(db: AsyncSession, dish_name_raw: str, stall_name: str = "") -> int | None:
+async def match_dish(db: AsyncSession, dish_name_raw: str) -> int | None:
     if not dish_name_raw:
         return None
     result = await db.execute(
@@ -129,7 +129,7 @@ async def process_new_reviews(db: AsyncSession, review_ids: list[int]) -> dict:
             review.dimensions = []
         review.risk_level = _calc_risk_level(sentiment, review.dimensions or [], text)
         if review.dish_name_raw:
-            review.dish_id = await match_dish(db, review.dish_name_raw, review.stall_name or "")
+            review.dish_id = await match_dish(db, review.dish_name_raw)
         processed += 1
 
     await db.flush()

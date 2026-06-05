@@ -1,8 +1,8 @@
 """ETL 服务：CSV/Excel 解析与导入
 
 CSV 列名直接对应 Review 表字段：
-    必填 — raw_text, stall_name
-    可选 — reviewed_at, source, dish_name_raw, rating, meal_time
+    必填 — raw_text
+    可选 — dish_name_raw, reviewed_at, source, rating, meal_time
 """
 import csv
 import io
@@ -14,18 +14,32 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import Review
 
-# CSV 列名 → Review 表字段名（直连，不绕弯）
 _FIELD_MAP = {
     "raw_text":      "raw_text",
-    "stall_name":    "stall_name",
+    "dish_name_raw": "dish_name_raw",
     "reviewed_at":   "reviewed_at",
     "source":        "source",
-    "dish_name_raw": "dish_name_raw",
     "rating":        "rating",
     "meal_time":     "meal_time",
 }
 
-REQUIRED_FIELDS = ["raw_text", "stall_name"]
+# 中文列名别名（兼容中文 Excel 导出的表头）
+_CN_ALIASES = {
+    "评价内容": "raw_text",
+    "评论内容": "raw_text",
+    "评价文本": "raw_text",
+    "菜品名称": "dish_name_raw",
+    "菜品名":   "dish_name_raw",
+    "评价来源": "source",
+    "来源":     "source",
+    "评分":     "rating",
+    "用餐时段": "meal_time",
+    "时段":     "meal_time",
+    "评价时间": "reviewed_at",
+    "时间":     "reviewed_at",
+}
+
+REQUIRED_FIELDS = ["raw_text"]
 
 
 class ETLService:
@@ -44,7 +58,10 @@ class ETLService:
         col_map = cls._build_col_map(header)
         missing = [f for f in REQUIRED_FIELDS if f not in col_map]
         if missing:
-            raise ValueError(f"缺少必填列：{missing}。CSV 表头请使用字段名：raw_text, stall_name 等。")
+            raise ValueError(
+                f"缺少必填列：{missing}。当前表头为：{header}。"
+                f"请使用英文列名 raw_text / dish_name_raw，或中文列名 评价内容 / 菜品名称 等。"
+            )
 
         parsed = []
         errors = []
@@ -74,7 +91,10 @@ class ETLService:
         col_map = cls._build_col_map(header)
         missing = [f for f in REQUIRED_FIELDS if f not in col_map]
         if missing:
-            raise ValueError(f"缺少必填列：{missing}")
+            raise ValueError(
+                f"缺少必填列：{missing}。当前表头为：{header}。"
+                f"请使用英文列名 raw_text / dish_name_raw，或中文列名 评价内容 / 菜品名称 等。"
+            )
 
         data_rows = rows[1:]
         imported = 0
@@ -87,14 +107,15 @@ class ETLService:
                 continue
             try:
                 review_data = cls._parse_row(data_rows[idx], col_map)
-                db.add(Review(**review_data))
-                new_reviews.append(review_data)
+                review = Review(**review_data)
+                db.add(review)
+                new_reviews.append(review)
                 imported += 1
             except ValueError as e:
                 errors.append(f"第 {idx + 2} 行：{e}")
 
         await db.flush()
-        review_ids = [r.id for r in new_reviews if isinstance(r, Review) and r.id is not None]
+        review_ids = [r.id for r in new_reviews if r.id is not None]
 
         return {
             "imported": imported,
@@ -108,13 +129,27 @@ class ETLService:
     def _load_rows(cls, file_io: IO, ext: str) -> list:
         """编码检测 → 解析 CSV/Excel → 返回二维列表"""
         raw_data = file_io.read()
-        detected = chardet.detect(raw_data)
-        encoding = detected.get("encoding", "utf-8") or "utf-8"
 
-        try:
-            text = raw_data.decode(encoding)
-        except (UnicodeDecodeError, LookupError):
-            text = raw_data.decode("utf-8", errors="replace")
+        # \u4f18\u5148\u5c1d\u8bd5\u5e38\u89c1\u4e2d\u6587\u7f16\u7801\uff08chardet \u5bf9\u77ed\u6587\u672c/\u6df7\u5408\u5185\u5bb9\u5bb9\u6613\u8bef\u5224\uff09
+        text = None
+        for enc in ("utf-8-sig", "utf-8", "gb18030", "gbk", "gb2312"):
+            try:
+                text = raw_data.decode(enc)
+                break
+            except (UnicodeDecodeError, LookupError):
+                continue
+
+        if text is None:
+            detected = chardet.detect(raw_data)
+            encoding = detected.get("encoding", "utf-8") or "utf-8"
+            try:
+                text = raw_data.decode(encoding)
+            except (UnicodeDecodeError, LookupError):
+                text = raw_data.decode("utf-8", errors="replace")
+
+        # \u53bb\u6389 BOM\uff08utf-8-sig \u5df2\u81ea\u52a8\u53bb\u9664\uff0c\u6b64\u5904\u515c\u5e95\uff09
+        if text and ord(text[0]) == 0xFEFF:
+            text = text[1:]
 
         if ext == "csv":
             return cls._parse_csv(text)
@@ -124,8 +159,33 @@ class ETLService:
 
     @classmethod
     def _parse_csv(cls, text: str) -> list:
-        reader = csv.reader(io.StringIO(text))
-        return [row for row in reader if any(cell.strip() for cell in row)]
+        delimiters = ["\t", ",", "|", ";"]
+        best_rows = []
+        best_cols = 0
+
+        for delim in delimiters:
+            try:
+                reader = csv.reader(io.StringIO(text), delimiter=delim)
+                rows = [row for row in reader if any(cell.strip() for cell in row)]
+                if not rows:
+                    continue
+                col_count = len(rows[0])
+                if col_count > best_cols:
+                    best_cols = col_count
+                    best_rows = rows
+            except Exception:
+                continue
+
+        if not best_rows:
+            try:
+                dialect = csv.Sniffer().sniff(text[:4096])
+                reader = csv.reader(io.StringIO(text), dialect)
+                best_rows = [row for row in reader if any(cell.strip() for cell in row)]
+            except Exception:
+                reader = csv.reader(io.StringIO(text))
+                best_rows = [row for row in reader if any(cell.strip() for cell in row)]
+
+        return best_rows
 
     @classmethod
     def _parse_excel(cls, raw_data: bytes, ext: str) -> list:
@@ -150,12 +210,17 @@ class ETLService:
 
     @classmethod
     def _build_col_map(cls, header: list) -> dict:
-        """表头列名 → 列索引。列名必须与 Review 表字段名一致。"""
+        """表头列名 → 列索引。支持英文列名和中文别名。"""
         col_map = {}
         for i, name in enumerate(header):
             key = name.strip()
+            # 去掉 BOM 字符
+            while key and ord(key[0]) == 0xFEFF:
+                key = key[1:]
             if key in _FIELD_MAP:
                 col_map[_FIELD_MAP[key]] = i
+            elif key in _CN_ALIASES:
+                col_map[_CN_ALIASES[key]] = i
         return col_map
 
     @classmethod
@@ -170,11 +235,9 @@ class ETLService:
         if not data["raw_text"]:
             raise ValueError("评价内容为空")
 
-        if "stall_name" not in col_map:
-            raise ValueError("缺少 stall_name 列")
-        data["stall_name"] = row[col_map["stall_name"]].strip()
+        if "stall_name" in col_map:
+            data["stall_name"] = row[col_map["stall_name"]].strip()
 
-        # 可选字段 — 有就取，没有就跳过
         if "dish_name_raw" in col_map:
             data["dish_name_raw"] = row[col_map["dish_name_raw"]].strip()
         if "source" in col_map:

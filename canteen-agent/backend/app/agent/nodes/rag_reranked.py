@@ -1,6 +1,6 @@
 """节点②：RAG 双库检索 + 加权重排序"""
 from app.state import AgentState
-from app.utils.milvus_client import search_with_score
+from app.agent.utils.milvus_client import search_with_score
 
 GOLD_WEIGHT = 0.7
 STANDARD_WEIGHT = 0.3

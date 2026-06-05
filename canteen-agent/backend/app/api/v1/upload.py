@@ -101,7 +101,6 @@ async def download_template():
         "template_url": "/static/templates/review_import_template.csv",
         "columns": [
             {"name": "raw_text", "required": True, "description": "评价内容"},
-            {"name": "stall_name", "required": True, "description": "档口名称"},
             {"name": "dish_name_raw", "required": False, "description": "菜品名称"},
             {"name": "source", "required": False, "description": "评价来源"},
             {"name": "rating", "required": False, "description": "评分 1-5"},
