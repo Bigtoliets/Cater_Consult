@@ -38,6 +38,7 @@ def _write_diagnosis_sync(group: dict, agent_result: dict):
         dish_id = int(group["dish_id"]) if group["dish_id"].isdigit() else None
         diag = Diagnosis(
             dish_id=dish_id,
+            dish_name=group.get("dish_name", "") or "",
             status=DiagnosisStatus.COMPLETED,
             decision_id=agent_result.get("decision_id"),
             summary=agent_result.get("improvement_summary", "") or "",

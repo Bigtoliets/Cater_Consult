@@ -3,6 +3,26 @@ from pymilvus import connections, Collection, utility
 from langchain_milvus import Milvus
 from app.utils.llm import get_embeddings
 from app.config import agent_settings
+from openai import OpenAI
+
+_embed_client = None
+
+
+def _get_embed_client():
+    global _embed_client
+    if _embed_client is None:
+        _embed_client = OpenAI(
+            api_key=agent_settings.OPENAI_EMBED_API_KEY,
+            base_url=agent_settings.OPENAI_EMBED_BASE_URL,
+        )
+    return _embed_client
+
+
+def _embed_text(text: str) -> list[float]:
+    """直接用 OpenAI 客户端调 embedding，绕过 langchain 兼容性问题"""
+    client = _get_embed_client()
+    resp = client.embeddings.create(model=agent_settings.OPENAI_EMBED_MODEL, input=text)
+    return resp.data[0].embedding
 
 _stores = {}
 _pymilvus_connected = False
@@ -41,19 +61,34 @@ def get_milvus_store(collection_name: str) -> Milvus:
 
 
 async def search_with_score(collection_name: str, query: str, k: int = 3) -> list[dict]:
-    """向量检索，返回带分数的结果列表 [{content, score, metadata}]"""
-    store = get_milvus_store(collection_name)
+    """向量检索（pymilvus 原生，绕过 langchain 兼容问题），返回 [{content, score, metadata}]"""
+    import traceback
+    _ensure_pymilvus()
     try:
-        docs_with_scores = store.similarity_search_with_score(query, k=k)
-        return [
-            {
-                "content": doc.page_content,
-                "score": score,
-                "metadata": doc.metadata or {},
-            }
-            for doc, score in docs_with_scores
-        ]
+        col = Collection(collection_name)
+        col.load()
+
+        query_vec = _embed_text(query)
+        search_params = {"metric_type": "IP", "params": {"nprobe": 16}}
+        results = col.search(
+            data=[query_vec],
+            anns_field="vector",
+            param=search_params,
+            limit=k,
+            output_fields=["decision_id", "content"],
+        )
+
+        items = []
+        for hits in results:
+            for hit in hits:
+                items.append({
+                    "content": hit.entity.get("content", ""),
+                    "score": hit.distance,
+                    "metadata": {"decision_id": hit.entity.get("decision_id", "")},
+                })
+        return items
     except Exception:
+        traceback.print_exc()
         return []
 
 
@@ -62,14 +97,14 @@ async def write_to_standard(decision_id: str, dish_name: str, content: str) -> d
     将新生成的整改单写入 standard_collection（静默沉淀为普通经验）
     绑定 decision_id，供后续检索和飞升
     """
+    import traceback
     _ensure_pymilvus()
     try:
         col = Collection("standard_collection")
         col.load()
 
-        # 用 embedding 模型对内容向量化
-        embeddings = get_embeddings()
-        vector = embeddings.embed_query(content)
+        # 用原生 OpenAI 客户端调 embedding（避开 langchain 兼容问题）
+        vector = _embed_text(content)
 
         col.insert([
             [decision_id],
@@ -77,8 +112,11 @@ async def write_to_standard(decision_id: str, dish_name: str, content: str) -> d
             [vector],
         ])
         col.flush()
+        print(f"[Milvus] 写入成功 decision_id={decision_id} dish={dish_name}")
         return {"status": "written", "decision_id": decision_id}
     except Exception as e:
+        print(f"[Milvus] 写入失败 decision_id={decision_id}: {e}")
+        traceback.print_exc()
         return {"status": "error", "error": str(e)}
 
 
@@ -106,8 +144,7 @@ async def promote_to_gold(decision_id: str, modified_content: str | None = None)
     # 2) 决定飞升的内容和向量
     if modified_content:
         content = modified_content
-        embeddings = get_embeddings()
-        vector = embeddings.embed_query(content)
+        vector = _embed_text(content)
     else:
         content = row.get("content", "")
         vector = row["vector"]

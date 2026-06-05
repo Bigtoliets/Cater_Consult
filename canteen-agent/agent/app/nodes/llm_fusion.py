@@ -39,10 +39,10 @@ async def llm_fusion(state: AgentState) -> AgentState:
 
         summary = ""
         detail = ""
-        m = re.search(r'【一句话摘要】\s*\n?(.*?)(?:\n【详细分析与建议】|\Z)', full_text, re.DOTALL)
+        m = re.search(r'【一句话摘要】\s*\n?(.*?)(?:\n【改进建议】|\Z)', full_text, re.DOTALL)
         if m:
             summary = m.group(1).strip()
-            detail_start = full_text.find("【详细分析与建议】")
+            detail_start = full_text.find("【改进建议】")
             detail = full_text[detail_start:].strip() if detail_start != -1 else full_text
         else:
             lines = full_text.strip().split("\n")
@@ -50,14 +50,10 @@ async def llm_fusion(state: AgentState) -> AgentState:
             detail = full_text
     except Exception:
         summary = f"{dish_name}收到{len(reviews)}条评价，差评集中在口感问题，建议后厨对照标准工艺排查"
-        detail = f"""【详细分析与建议】
-■ 核心问题定位：{dish_name} 收到 {len(reviews)} 条评价，其中包含差评
-■ 根因推测：请后厨主管对照标准工艺检查出品环节
-■ 改进建议：
-  1. 抽检当前批次出品质量
-  2. 对照标准工艺排查问题环节
-  3. 调整后加强出餐前检查
-■ 验证标准：后厨主管品控确认"""
+        detail = f"""【改进建议】
+1. 抽检当前批次出品质量
+2. 对照标准工艺排查问题环节
+3. 调整后加强出餐前检查"""
 
     return {
         **state,

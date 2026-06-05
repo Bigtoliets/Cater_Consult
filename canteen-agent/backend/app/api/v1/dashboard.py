@@ -133,16 +133,9 @@ async def get_summary_table(
     )
     diagnoses = result.scalars().all()
 
-    from app.models.models import Dish
-    dish_ids = list({d.dish_id for d in diagnoses if d.dish_id})
-    dish_map = {}
-    if dish_ids:
-        dish_result = await db.execute(select(Dish.id, Dish.name).where(Dish.id.in_(dish_ids)))
-        dish_map = {did: dname for did, dname in dish_result.all()}
-
     table = []
     for d in diagnoses:
-        dish_name = dish_map.get(d.dish_id, f"菜品#{d.dish_id}")
+        dish_name = d.dish_name or f"菜品#{d.dish_id}"
         table.append({
             "id": d.id,
             "dish_id": d.dish_id,

@@ -95,6 +95,7 @@ async def agent_chat(input_data: ChatInput):
         try:
             gold_results = await search_with_score("gold_collection", input_data.question, k=2)
             standard_results = await search_with_score("standard_collection", input_data.question, k=2)
+            print(f"[Chat] 问题: {input_data.question[:50]} | gold={len(gold_results)} standard={len(standard_results)}")
 
             all_items = []
             for r in gold_results:
@@ -113,6 +114,8 @@ async def agent_chat(input_data: ChatInput):
             system_prompt = CHAT_SYSTEM_PROMPT
             if experience_context:
                 system_prompt += f"\n\n当前查询到的历史经验：{experience_context}"
+            else:
+                system_prompt += "\n\n⚠️ 当前向量库中暂无相关历史决策数据，请如实告知用户暂无记录，不要编造。"
 
             llm = get_llm()
             messages = [
@@ -120,7 +123,7 @@ async def agent_chat(input_data: ChatInput):
                 {"role": "user", "content": input_data.question},
             ]
 
-            async for chunk in llm.astream(input_data.question):
+            async for chunk in llm.astream(messages):
                 if hasattr(chunk, "content") and chunk.content:
                     yield f"data: {json.dumps({'content': chunk.content})}\n\n"
             yield f"data: {json.dumps({'done': True})}\n\n"

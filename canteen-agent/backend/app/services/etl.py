@@ -250,4 +250,6 @@ class ETLService:
             data["reviewed_at"] = row[col_map["reviewed_at"]].strip()
 
         data["is_valid"] = True
+        if not data.get("reviewed_at"):
+            data["reviewed_at"] = datetime.now()
         return data

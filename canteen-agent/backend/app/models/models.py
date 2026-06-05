@@ -74,6 +74,7 @@ class Diagnosis(Base):
     confidence = Column(Float, default=0.0)
     conflict_analysis = Column(JSON)
     decision_id = Column(String(50))
+    dish_name = Column(String(200), comment="菜品名称（冗余字段，避免 join 失败丢名字）")
     summary = Column(String(200))
     corrective_action = Column(Text)
     human_review_required = Column(Boolean, default=False)
