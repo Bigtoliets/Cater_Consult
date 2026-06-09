@@ -145,3 +145,54 @@ CREATE TABLE IF NOT EXISTS daily_summaries (
     created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_date (date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='日报缓存';
+
+-- -----------------------------------------------------------
+-- v3.0 新增表
+-- -----------------------------------------------------------
+
+-- 2.1 Reviews 表升级: 新增 external_id 字段 (用于多源去重)
+ALTER TABLE reviews ADD COLUMN IF NOT EXISTS external_id VARCHAR(100) COMMENT '外部系统ID（去重键）' AFTER source;
+ALTER TABLE reviews ADD INDEX IF NOT EXISTS idx_source_ext_id (source, external_id);
+ALTER TABLE reviews ADD INDEX IF NOT EXISTS idx_source (source);
+
+-- 7. 整改效果追踪表 (v3.0 新增)
+CREATE TABLE IF NOT EXISTS feedback_records (
+    id                    INT AUTO_INCREMENT PRIMARY KEY,
+    decision_id           VARCHAR(50)  COMMENT '关联 Diagnosis.decision_id',
+    dish_id               INT          COMMENT '关联菜品',
+    status                VARCHAR(20) DEFAULT 'executed' COMMENT 'executed/ignored/effective/ineffective',
+    pre_negative_rate     DOUBLE DEFAULT 0.0 COMMENT '整改前7天差评率',
+    post_negative_rate_3d DOUBLE DEFAULT 0.0 COMMENT '整改后3天差评率',
+    post_negative_rate_7d DOUBLE DEFAULT 0.0 COMMENT '整改后7天差评率',
+    post_negative_rate_14d DOUBLE DEFAULT 0.0 COMMENT '整改后14天差评率',
+    improvement_pct       DOUBLE DEFAULT 0.0 COMMENT '改善百分比(负值=改善)',
+    auto_promoted         TINYINT(1) DEFAULT 0 COMMENT '是否自动飞升金标',
+    auto_demoted          TINYINT(1) DEFAULT 0 COMMENT '是否自动降级失效',
+    executed_at           DATETIME COMMENT '整改执行时间',
+    created_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at            DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (dish_id) REFERENCES dishes(id),
+    INDEX idx_decision_id (decision_id),
+    INDEX idx_dish_id (dish_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='整改效果追踪';
+
+-- 8. 厨师画像表 (v3.0 新增)
+CREATE TABLE IF NOT EXISTS chef_profiles (
+    id                    INT AUTO_INCREMENT PRIMARY KEY,
+    chef_name             VARCHAR(50) NOT NULL COMMENT '厨师姓名',
+    total_dishes_handled  INT DEFAULT 0 COMMENT '累计处理菜品数',
+    avg_positive_rate     DOUBLE DEFAULT 0.0 COMMENT '平均好评率',
+    avg_negative_rate     DOUBLE DEFAULT 0.0 COMMENT '平均差评率',
+    improvement_rate      DOUBLE DEFAULT 0.0 COMMENT '整改后改善率',
+    known_weak_dimensions JSON COMMENT '已知薄弱维度',
+    strong_dimensions     JSON COMMENT '优势维度',
+    last_evaluated_at     DATETIME COMMENT '最近评估时间',
+    created_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at            DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_chef_name (chef_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='厨师画像';
+
+-- 9. 推送规则默认配置 (v3.0 新增)
+INSERT INTO system_configs (scope, config_key, config_value, description) VALUES
+('global', 'push_rules', '{"critical":["wechat_work","dingtalk"],"warning":["wechat_work"],"info":["wechat_work"]}', '推送路由规则')
+ON DUPLICATE KEY UPDATE config_value=VALUES(config_value);

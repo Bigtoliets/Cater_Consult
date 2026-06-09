@@ -1,6 +1,6 @@
-"""SQLAlchemy 模型（菜品为单位，无档口/食堂/厨师）"""
+"""SQLAlchemy 模型 v3.0 — 完整数据模型（含反馈追踪 + 厨师画像 + 多源去重）"""
 from sqlalchemy import (
-    Column, Integer, String, Text, Float, Boolean, DateTime, JSON, ForeignKey,
+    Column, Integer, String, Text, Float, Boolean, DateTime, JSON, ForeignKey, Index,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -23,6 +23,13 @@ class DiagnosisStatus(str, enum.Enum):
     REJECTED = "rejected"
 
 
+class FeedbackStatus(str, enum.Enum):
+    EXECUTED = "executed"
+    IGNORED = "ignored"
+    EFFECTIVE = "effective"
+    INEFFECTIVE = "ineffective"
+
+
 class Dish(Base):
     """菜品"""
     __tablename__ = "dishes"
@@ -38,14 +45,16 @@ class Dish(Base):
     reviews = relationship("Review", back_populates="dish")
     diagnoses = relationship("Diagnosis", back_populates="dish")
     sop_entries = relationship("SOPEntry", back_populates="dish")
+    feedback_records = relationship("FeedbackRecord", back_populates="dish")
 
 
 class Review(Base):
-    """用户评价"""
+    """用户评价 (v3.0: 新增 external_id + source 索引)"""
     __tablename__ = "reviews"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    source = Column(String(50), comment="评价来源")
+    source = Column(String(50), comment="评价来源", index=True)
+    external_id = Column(String(100), comment="外部系统ID（去重键）", index=True)
     raw_text = Column(Text, nullable=False, comment="原始评价文本")
     sentiment = Column(SAEnum(Sentiment), comment="情感倾向")
     rating = Column(Integer, comment="评分 1-5")
@@ -60,6 +69,10 @@ class Review(Base):
     created_at = Column(DateTime, server_default=func.now())
 
     dish = relationship("Dish", back_populates="reviews")
+
+    __table_args__ = (
+        Index("idx_source_ext_id", "source", "external_id"),
+    )
 
 
 class Diagnosis(Base):
@@ -133,3 +146,46 @@ class DailySummary(Base):
     radar_values = Column(JSON)
     ai_summary = Column(Text)
     created_at = Column(DateTime, server_default=func.now())
+
+
+# ============================================================
+# v3.0 新增模型：反馈追踪 + 厨师画像
+# ============================================================
+
+class FeedbackRecord(Base):
+    """整改效果追踪 (v3.0 新增)"""
+    __tablename__ = "feedback_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    decision_id = Column(String(50), index=True, comment="关联 Diagnosis.decision_id")
+    dish_id = Column(Integer, ForeignKey("dishes.id"), comment="关联菜品")
+    status = Column(SAEnum(FeedbackStatus), default=FeedbackStatus.EXECUTED, comment="执行状态")
+    pre_negative_rate = Column(Float, default=0.0, comment="整改前7天差评率")
+    post_negative_rate_3d = Column(Float, default=0.0, comment="整改后3天差评率")
+    post_negative_rate_7d = Column(Float, default=0.0, comment="整改后7天差评率")
+    post_negative_rate_14d = Column(Float, default=0.0, comment="整改后14天差评率")
+    improvement_pct = Column(Float, default=0.0, comment="改善百分比 (负值=改善)")
+    auto_promoted = Column(Boolean, default=False, comment="是否自动飞升为金标")
+    auto_demoted = Column(Boolean, default=False, comment="是否自动降级为失效")
+    executed_at = Column(DateTime, comment="整改执行时间")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    dish = relationship("Dish", back_populates="feedback_records")
+
+
+class ChefProfile(Base):
+    """厨师画像 (v3.0 新增)"""
+    __tablename__ = "chef_profiles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chef_name = Column(String(50), nullable=False, comment="厨师姓名")
+    total_dishes_handled = Column(Integer, default=0, comment="累计处理菜品数")
+    avg_positive_rate = Column(Float, default=0.0, comment="平均好评率")
+    avg_negative_rate = Column(Float, default=0.0, comment="平均差评率")
+    improvement_rate = Column(Float, default=0.0, comment="整改后改善率")
+    known_weak_dimensions = Column(JSON, comment="已知薄弱维度 (如 ['口味','火候'])")
+    strong_dimensions = Column(JSON, comment="优势维度")
+    last_evaluated_at = Column(DateTime, comment="最近一次评估时间")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

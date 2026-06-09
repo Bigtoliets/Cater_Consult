@@ -1,6 +1,6 @@
-"""Milvus 向量库初始化 —— 创建 gold_collection 和 standard_collection
+"""Milvus 向量库初始化 v3.0 — 五 Collection
 
-运行一次即可：python init_milvus.py
+运行: python init_milvus.py
 """
 from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType, utility
 
@@ -8,7 +8,16 @@ from app.config import agent_settings
 
 HOST = agent_settings.MILVUS_HOST
 PORT = agent_settings.MILVUS_PORT
-DIM = 1024  # text-embedding-v4 维度（阿里云 DashScope）
+DIM = 1024  # text-embedding-v4 维度
+
+
+COLLECTION_CONFIGS = {
+    "gold_collection": "金标经验库（管理层认证的标杆整改方案）",
+    "standard_collection": "普通经验库（自动沉淀的历史决策）",
+    "sop_collection": "标准工艺库（菜品标准操作流程）",
+    "pattern_collection": "问题模式库（问题→根因→方案映射）",
+    "cycle_collection": "周期规律库（季节/周度/时段品控规律）",
+}
 
 
 def create_collections():
@@ -23,11 +32,11 @@ def create_collections():
     ]
     schema = CollectionSchema(fields, description="Canteen Agent 向量库")
 
-    for name in ("standard_collection", "gold_collection"):
+    for name, description in COLLECTION_CONFIGS.items():
         if utility.has_collection(name):
-            print(f"集合 {name} 已存在，跳过")
+            print(f"  [{name}] 已存在 ({description})，跳过")
             continue
-        col = Collection(name=name, schema=schema)
+        col = Collection(name=name, schema=schema, description=description)
         col.create_index(
             field_name="vector",
             index_params={
@@ -36,10 +45,11 @@ def create_collections():
                 "params": {"nlist": 128},
             },
         )
-        print(f"集合 {name} 创建完成 (dim={DIM}, metric=IP)")
+        col.load()
+        print(f"  [{name}] 创建完成 ({description})")
 
     connections.disconnect("default")
-    print("初始化完成。")
+    print(f"\n✅ 初始化完成: {len(COLLECTION_CONFIGS)} 个 Collection")
 
 
 if __name__ == "__main__":

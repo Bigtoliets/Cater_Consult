@@ -67,6 +67,24 @@ class Settings(BaseSettings):
     BACKEND_SECRET_KEY: str = "dev-secret-change-in-production"
     BACKEND_PORT: int = 8000
 
+    # === 推送通道 (v3.0 新增) ===
+    WECOM_WEBHOOK_URL: str = ""         # 企业微信 Bot Webhook
+    DINGTALK_WEBHOOK_URL: str = ""      # 钉钉 Bot Webhook
+    DINGTALK_SECRET: str = ""           # 钉钉加签密钥
+    SMTP_HOST: str = ""                 # 邮件 SMTP
+    SMTP_PORT: int = 465
+    SMTP_SENDER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_RECIPIENTS: str = ""           # 逗号分隔
+
+    # === 多源数据接入 (v3.0 新增) ===
+    MEITUAN_APP_ID: str = ""
+    MEITUAN_APP_SECRET: str = ""
+    WECHAT_APP_ID: str = ""
+    WECHAT_APP_SECRET: str = ""
+    POS_API_URL: str = ""
+    POS_API_KEY: str = ""
+
     class Config:
         env_file = "../.env"
         extra = "allow"

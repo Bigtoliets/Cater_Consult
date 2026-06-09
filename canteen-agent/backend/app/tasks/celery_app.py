@@ -19,7 +19,15 @@ celery_app.conf.update(
     beat_schedule={
         "generate-daily-summary": {
             "task": "app.tasks.periodic_tasks.generate_daily_summary",
-            "schedule": 3600.0,
+            "schedule": 3600.0,  # 每小时
+        },
+        "track-feedback": {
+            "task": "app.tasks.periodic_tasks.track_feedback_effectiveness",
+            "schedule": 86400.0,  # 每天一次 (v3.0)
+        },
+        "sync-sop-to-milvus": {
+            "task": "app.tasks.periodic_tasks.sync_sop_to_milvus",
+            "schedule": 43200.0,  # 每12小时 (v3.0)
         },
         "cleanup-old-reviews": {
             "task": "app.tasks.periodic_tasks.cleanup_old_data",

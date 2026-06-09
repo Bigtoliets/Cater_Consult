@@ -1,21 +1,72 @@
-"""FastAPI 应用入口"""
+"""FastAPI 应用入口 v3.0"""
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.api.v1 import router as v1_router
-from app.models.base import engine, Base
+from app.models.base import engine, Base, AsyncSessionLocal
+from app.push.wechat_work import WechatWorkPusher
+from app.push.dingtalk import DingTalkPusher
+from app.push.email_pusher import EmailPusher
+from app.push.dispatcher import init_dispatcher, get_dispatcher
+from app.connectors.meituan_connector import MeituanConnector
+from app.connectors.wechat_connector import WechatConnector
+from app.connectors.pos_connector import POSConnector
+from app.connectors.scheduler import FetchScheduler
+
+_scheduler: FetchScheduler | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    # 启动时：创建表（生产环境应使用 Alembic 迁移）
+    global _scheduler
+
+    # 启动时：创建表
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # 初始化推送调度器
+    pushers = []
+    if settings.WECOM_WEBHOOK_URL:
+        pushers.append(WechatWorkPusher(settings.WECOM_WEBHOOK_URL))
+    if settings.DINGTALK_WEBHOOK_URL:
+        pushers.append(DingTalkPusher(
+            settings.DINGTALK_WEBHOOK_URL,
+            settings.DINGTALK_SECRET,
+        ))
+    if settings.SMTP_HOST:
+        pushers.append(EmailPusher(
+            settings.SMTP_HOST, settings.SMTP_PORT,
+            settings.SMTP_SENDER, settings.SMTP_PASSWORD,
+            settings.SMTP_RECIPIENTS.split(",") if settings.SMTP_RECIPIENTS else [],
+        ))
+    init_dispatcher(pushers)
+    print(f"[Push] 已注册 {len(pushers)} 个推送通道: "
+          f"{[p.channel_name for p in pushers]}")
+
+    # 初始化数据接入调度器
+    _scheduler = FetchScheduler(AsyncSessionLocal)
+    if settings.MEITUAN_APP_ID:
+        _scheduler.register(MeituanConnector(
+            settings.MEITUAN_APP_ID, settings.MEITUAN_APP_SECRET,
+        ))
+    if settings.WECHAT_APP_ID:
+        _scheduler.register(WechatConnector(
+            settings.WECHAT_APP_ID, settings.WECHAT_APP_SECRET,
+        ))
+    if settings.POS_API_URL:
+        _scheduler.register(POSConnector(
+            settings.POS_API_URL, settings.POS_API_KEY,
+        ))
+    _scheduler.start()
+
     yield
+
     # 关闭时
+    if _scheduler:
+        _scheduler.stop()
     await engine.dispose()
 
 

@@ -1,4 +1,4 @@
-"""Agent 微服务入口（FastAPI）—— 菜品级批量处理 + 自进化闭环"""
+"""Agent 微服务入口 v4.0 — ReAct引擎 + 工具系统 + 记忆管理 + 幻觉防护"""
 import json
 import asyncio
 from fastapi import FastAPI
@@ -9,9 +9,20 @@ from app.workflow import agent_workflow
 from app.state import AgentState, new_decision_id
 from app.utils.llm import get_llm
 from app.utils.milvus_client import write_to_standard
+from app.utils.hallucination import get_detector, HallucinationDetector
+from app.tools import register_all_tools, get_tool_registry
+from app.react.engine import ReActEngine
+from app.memory.manager import get_or_create_memory
 from app.prompts.templates import CHAT_SYSTEM_PROMPT
+from app.prompts.react_prompts import CHAT_SYSTEM_PROMPT_V4, REACT_FEW_SHOT
 
 app = FastAPI(title="Canteen Agent Engine", version="4.1.0")
+
+# ── 启动时注册所有工具 ──
+@app.on_event("startup")
+async def startup():
+    register_all_tools()
+    print(f"[Agent v4.0] 已启动，{len(get_tool_registry().get_all())} 个工具可用")
 
 
 class DishAnalyzeInput(BaseModel):
@@ -36,6 +47,7 @@ class ChatInput(BaseModel):
 
 @app.post("/agent/analyze_dish")
 async def analyze_dish(input_data: DishAnalyzeInput) -> DishAnalyzeResult:
+    """v4.0: 流水线分析 + 幻觉检测 + 自动事实核查"""
     initial_state: AgentState = {
         "dish_name": input_data.dish_name,
         "dish_id": input_data.dish_id,
@@ -56,6 +68,19 @@ async def analyze_dish(input_data: DishAnalyzeInput) -> DishAnalyzeResult:
         summary = result.get("improvement_summary", "")
         detail = result.get("improvement_detail", "")
 
+        # ── v4.0: 幻觉检测 ──
+        detector = get_detector()
+        h_report = detector.check(
+            detail + summary,
+            context={"dish_name": input_data.dish_name},
+        )
+        if h_report.has_hallucination:
+            # 附加幻觉警告到输出
+            warning = f"\n\n⚠️ **幻觉检测警告** (风险: {h_report.risk_level}):\n"
+            warning += "\n".join(f"- {i}" for i in h_report.issues[:3])
+            detail += warning
+            print(f"[Hallucination] {input_data.dish_name}: {h_report.risk_level} - {len(h_report.issues)} issues")
+
         decision_id = ""
         if detail:
             decision_id = new_decision_id()
@@ -70,9 +95,10 @@ async def analyze_dish(input_data: DishAnalyzeInput) -> DishAnalyzeResult:
             decision_id=decision_id or None,
             improvement_summary=summary or None,
             improvement_detail=detail or None,
-            human_review_required=result.get("human_review_required", False),
+            human_review_required=result.get("human_review_required", False) or h_report.has_hallucination,
         )
-    except Exception:
+    except Exception as e:
+        print(f"[analyze_dish] 异常: {e}")
         return DishAnalyzeResult(
             dish_name=input_data.dish_name,
             dish_id=input_data.dish_id,
@@ -97,52 +123,110 @@ async def agent_promote(input_data: PromoteInput):
 
 @app.post("/agent/chat")
 async def agent_chat(input_data: ChatInput):
+    """v4.0: ReAct 引擎驱动 — Think→Act→Observe 循环 + 记忆管理 + 幻觉防护"""
     from fastapi.responses import StreamingResponse
-    from app.utils.milvus_client import search_with_score
-
-    GOLD_W = 0.7
-    STD_W = 0.3
 
     async def event_stream():
         try:
-            gold_results = await search_with_score("gold_collection", input_data.question, k=2)
-            standard_results = await search_with_score("standard_collection", input_data.question, k=2)
-            print(f"[Chat] 问题: {input_data.question[:50]} | gold={len(gold_results)} standard={len(standard_results)}")
+            # ── 创建会话记忆 ──
+            session_id = "default"
+            memory = get_or_create_memory(session_id)
+            memory.add_message("user", input_data.question)
 
-            all_items = []
-            for r in gold_results:
-                all_items.append({"content": r["content"], "score": r["score"], "source": "GOLD", "w": r["score"] * GOLD_W})
-            for r in standard_results:
-                all_items.append({"content": r["content"], "score": r["score"], "source": "STANDARD", "w": r["score"] * STD_W})
-            all_items.sort(key=lambda x: x["w"], reverse=True)
+            # ── 初始化 ReAct 引擎 ──
+            registry = get_tool_registry()
+            engine = ReActEngine(
+                tool_registry=registry,
+                memory=memory,
+                max_iterations=5,
+                min_confidence=0.5,
+            )
 
-            experience_context = ""
-            if all_items:
-                experience_context += "\n历史经验（按权重重排序）：\n"
-                for item in all_items:
-                    tag = "🏅金标" if item["source"] == "GOLD" else "📋普通"
-                    experience_context += f"[{tag}] [加权分{item['w']:.2f}] {item['content'][:400]}\n"
+            # 发送思考中状态
+            yield f"data: {json.dumps({'status': 'thinking', 'content': '🔍 正在分析您的问题...'})}\n\n"
 
-            system_prompt = CHAT_SYSTEM_PROMPT
-            if experience_context:
-                system_prompt += f"\n\n当前查询到的历史经验：{experience_context}"
-            else:
-                system_prompt += "\n\n⚠️ 当前向量库中暂无相关历史决策数据，请如实告知用户暂无记录，不要编造。"
+            # 执行 ReAct 循环
+            result = await engine.run(input_data.question, session_id=session_id)
 
-            llm = get_llm()
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": input_data.question},
-            ]
+            # ── 幻觉检测 ──
+            detector = get_detector()
+            h_report = detector.check(result.answer, context={"question": input_data.question})
 
-            async for chunk in llm.astream(messages):
-                if hasattr(chunk, "content") and chunk.content:
-                    yield f"data: {json.dumps({'content': chunk.content})}\n\n"
-            yield f"data: {json.dumps({'done': True})}\n\n"
+            # 构建最终输出
+            final_content = result.answer
+
+            # 附加元信息
+            meta_parts = []
+            if result.tools_called:
+                meta_parts.append(f"🔧 调用了 {len(result.tools_called)} 个工具: {', '.join(result.tools_called)}")
+            if result.sources:
+                meta_parts.append(f"📚 来源: {', '.join(set(result.sources))}")
+            meta_parts.append(f"📊 置信度: {result.confidence:.0%}")
+            if h_report.has_hallucination:
+                meta_parts.append(f"⚠️ 幻觉风险: {h_report.risk_level}")
+
+            final_content += "\n\n---\n" + "\n".join(meta_parts)
+
+            # 存储助手回复到记忆
+            memory.add_message("assistant", final_content)
+
+            # 流式输出最终答案 (分块模拟流式)
+            chunk_size = 50
+            for i in range(0, len(final_content), chunk_size):
+                chunk = final_content[i:i + chunk_size]
+                yield f"data: {json.dumps({'content': chunk})}\n\n"
+                await asyncio.sleep(0.01)  # 模拟流式延迟
+
+            yield f"data: {json.dumps({'done': True, 'confidence': result.confidence, 'tools': result.tools_called})}\n\n"
+
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/agent/chat_react")
+async def agent_chat_react(input_data: ChatInput):
+    """ReAct 模式对话 (非流式, 返回完整结果含步骤)"""
+    session_id = "default"
+    memory = get_or_create_memory(session_id)
+    memory.add_message("user", input_data.question)
+
+    registry = get_tool_registry()
+    engine = ReActEngine(
+        tool_registry=registry,
+        memory=memory,
+        max_iterations=5,
+        min_confidence=0.5,
+    )
+
+    result = await engine.run(input_data.question, session_id=session_id)
+
+    # 幻觉检测
+    detector = get_detector()
+    h_report = detector.check(result.answer, context={"question": input_data.question})
+
+    memory.add_message("assistant", result.answer)
+
+    return {
+        "answer": result.answer,
+        "confidence": result.confidence,
+        "iterations": result.total_iterations,
+        "tools_called": result.tools_called,
+        "sources": result.sources,
+        "hallucination_risk": h_report.risk_level,
+        "hallucination_issues": h_report.issues[:5],
+        "steps": [
+            {
+                "thought": s.thought[:200],
+                "action": s.action,
+                "observation": s.observation[:300],
+            }
+            for s in result.steps
+        ],
+    }
 
 
 @app.get("/agent/health")

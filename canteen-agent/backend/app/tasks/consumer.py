@@ -44,10 +44,50 @@ def _write_diagnosis_sync(group: dict, agent_result: dict):
             summary=agent_result.get("improvement_summary", "") or "",
             corrective_action=agent_result.get("improvement_detail", "") or "",
             human_review_required=agent_result.get("human_review_required", False),
-            confidence=0.8,
+            confidence=agent_result.get("confidence_score", 0.8),
         )
         session.add(diag)
         session.commit()
+
+        # v3.0: 需人工复核时推送告警
+        if diag.human_review_required:
+            _push_review_alert(
+                group.get("dish_name", ""),
+                dish_id,
+                diag.decision_id,
+                diag.summary,
+                diag.confidence,
+            )
+
+
+def _push_review_alert(
+    dish_name: str,
+    dish_id: int | None,
+    decision_id: str | None,
+    summary: str,
+    confidence: float,
+):
+    """v3.0: 需要人工复核的诊断结果推送告警"""
+    try:
+        from app.push.dispatcher import get_dispatcher
+        from app.push.base import Alert, AlertLevel
+
+        confidence_pct = f"{confidence:.0%}" if confidence else "N/A"
+        dispatcher = get_dispatcher()
+        import asyncio
+        asyncio.run(dispatcher.dispatch(Alert(
+            level=AlertLevel.WARNING,
+            title=f"需人工复核：{dish_name}",
+            content=f"**决策ID**：{decision_id or 'N/A'}\n"
+                    f"**置信度**：{confidence_pct}\n"
+                    f"**摘要**：{summary or '无'}\n\n"
+                    f"请在 Dashboard 中查看详情并复核。",
+            dish_name=dish_name,
+            dish_id=dish_id,
+            decision_id=decision_id,
+        )))
+    except Exception as e:
+        print(f"[Alert] 复核告警推送失败: {e}")
 
 
 @celery_app.task(

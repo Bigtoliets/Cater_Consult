@@ -5,12 +5,14 @@ const api = axios.create({
   timeout: 30000,
 });
 
+// ====== 日报 ======
 export const getDailySummary = (date) =>
   api.get("/dashboard/summary", { params: { target_date: date } });
 
 export const getSummaryTable = (date) =>
   api.get("/dashboard/summary-table", { params: { target_date: date } });
 
+// ====== 菜品诊断 ======
 export const getDishDiagnosis = (dishId) =>
   api.get(`/dishes/${dishId}/diagnosis`);
 
@@ -26,6 +28,7 @@ export const rejectDiagnosis = (dishId) =>
 export const promoteDecision = (decisionId) =>
   api.post("/config/promote", { decision_id: decisionId });
 
+// ====== 配置 ======
 export const getConfigs = (scope, scopeId) =>
   api.get("/config/", { params: { scope, scope_id: scopeId } });
 
@@ -38,12 +41,17 @@ export const getKeywordWeights = () =>
 export const updateKeywordWeights = (weights) =>
   api.put("/config/keyword-weights", { weights, description: "关键词维度权重" });
 
+// ====== 知识库 ======
 export const getDishKnowledge = (dishId, dimension) =>
   api.get(`/config/knowledge/dish/${dishId}`, { params: { dimension } });
 
 export const createSOPEntry = (data) =>
   api.post("/config/knowledge", data);
 
+export const deleteSOPEntry = (entryId) =>
+  api.delete(`/config/knowledge/${entryId}`);
+
+// ====== 上传 ======
 export const uploadPreview = (file) => {
   const formData = new FormData();
   formData.append("file", file);
@@ -61,11 +69,24 @@ export const uploadConfirm = (file, selectedIndices) => {
   });
 };
 
+// ====== 智能问答 ======
 export const chatQuery = (question) =>
   api.post("/chat/query", null, { params: { question } });
 
 export const getPresetQuestions = () =>
   api.get("/chat/presets");
 
+// ====== v3.0: 推送配置 ======
+export const getPushConfig = () =>
+  api.get("/config/", { params: { scope: "global", config_key: "push_rules" } });
+
+export const updatePushConfig = (rules) =>
+  api.put("/config/push_rules", { config_value: rules, description: "推送规则" }, { params: { scope: "global" } });
+
+// ====== v3.0: 反馈追踪 ======
+export const getFeedbackRecords = (dishId) =>
+  api.get(`/dishes/${dishId}/feedback`);
+
+// ====== 健康检查 ======
 export const healthCheck = () =>
   api.get("/health");

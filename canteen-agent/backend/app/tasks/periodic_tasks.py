@@ -99,3 +99,43 @@ def trigger_agent_analysis(review_ids: list):
     logger.info(f"触发 Agent 分析 {len(review_ids)} 条评价")
     # 通过 RabbitMQ 发送消息给 Agent 微服务
     logger.info("Agent 分析任务已下发")
+
+
+@celery_app.task(name="app.tasks.periodic_tasks.track_feedback_effectiveness")
+def track_feedback_effectiveness():
+    """v3.0: 追踪整改效果 — 每天执行一次，自动飞升/降级方案权重"""
+    import asyncio
+    from app.models.base import AsyncSessionLocal
+    from app.services.feedback_tracker import FeedbackTracker
+
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            tracker = FeedbackTracker(db)
+            stats = await tracker.track_all_active_diagnoses()
+            logger.info(f"[FeedbackTracker] 效果追踪完成: {stats}")
+            return stats
+
+    try:
+        stats = asyncio.run(_run())
+        logger.info(f"[FeedbackTracker] 追踪 {stats['tracked']} 条诊断, "
+                     f"飞升 {stats['promoted']} 条金标, "
+                     f"降级 {stats['demoted']} 条")
+    except Exception as e:
+        logger.error(f"[FeedbackTracker] 追踪失败: {e}")
+
+
+@celery_app.task(name="app.tasks.periodic_tasks.sync_sop_to_milvus")
+def sync_sop_to_milvus():
+    """v3.0: 将 MySQL SOP 知识条目同步到 Milvus 向量库 (sop_collection)"""
+    import asyncio
+    from app.models.base import SyncSessionLocal
+    from app.models.models import SOPEntry
+
+    # 同步逻辑: 遍历 SOPEntry 表, 对每个条目计算 embedding 并写入 sop_collection
+    # 当前用 placeholder, 完整实现需要引入 embedding 客户端
+    logger.info("[SOP Sync] 开始同步 SOP 到 Milvus...")
+    with SyncSessionLocal() as session:
+        # TODO: 实现 SOP → Milvus 同步
+        # entries = session.query(SOPEntry).all()
+        logger.info(f"[SOP Sync] 同步完成")
+

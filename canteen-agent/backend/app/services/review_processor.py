@@ -119,6 +119,8 @@ async def process_new_reviews(db: AsyncSession, review_ids: list[int]) -> dict:
     reviews = result.scalars().all()
 
     processed = 0
+    critical_reviews = []  # v3.0: 收集高风险评价用于告警
+
     for review in reviews:
         text = review.raw_text or ""
         sentiment = _analyze_sentiment(text)
@@ -132,8 +134,37 @@ async def process_new_reviews(db: AsyncSession, review_ids: list[int]) -> dict:
             review.dish_id = await match_dish(db, review.dish_name_raw)
         processed += 1
 
+        # 收集高风险评价
+        if review.risk_level >= 5:
+            critical_reviews.append(review)
+
     await db.flush()
+
+    # v3.0: 高风险评价即时推送告警
+    if critical_reviews:
+        await _alert_critical_reviews(critical_reviews)
+
     return {"processed": processed}
+
+
+async def _alert_critical_reviews(reviews: list):
+    """v3.0: 对食安级别评价即时推送告警"""
+    try:
+        from app.push.dispatcher import get_dispatcher
+        from app.push.base import Alert, AlertLevel
+
+        dispatcher = get_dispatcher()
+        for r in reviews:
+            await dispatcher.dispatch(Alert(
+                level=AlertLevel.CRITICAL,
+                title=f"🚨 食安告警：{r.dish_name_raw or '未知菜品'}",
+                content=f"**风险等级**：{r.risk_level}/5\n"
+                        f"**评价内容**：{r.raw_text[:200]}\n"
+                        f"**评价来源**：{r.source or '未知'}",
+                dish_name=r.dish_name_raw,
+            ))
+    except Exception as e:
+        print(f"[Alert] 推送失败: {e}")
 
 
 async def get_dish_review_groups(db: AsyncSession, review_ids: list[int]) -> dict[str, list]:
