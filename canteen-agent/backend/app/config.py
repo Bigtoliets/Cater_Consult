@@ -77,14 +77,6 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     SMTP_RECIPIENTS: str = ""           # 逗号分隔
 
-    # === 多源数据接入 (v3.0 新增) ===
-    MEITUAN_APP_ID: str = ""
-    MEITUAN_APP_SECRET: str = ""
-    WECHAT_APP_ID: str = ""
-    WECHAT_APP_SECRET: str = ""
-    POS_API_URL: str = ""
-    POS_API_KEY: str = ""
-
     class Config:
         env_file = "../.env"
         extra = "allow"

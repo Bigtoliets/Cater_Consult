@@ -51,23 +51,14 @@ export const createSOPEntry = (data) =>
 export const deleteSOPEntry = (entryId) =>
   api.delete(`/config/knowledge/${entryId}`);
 
-// ====== 上传 ======
-export const uploadPreview = (file) => {
-  const formData = new FormData();
-  formData.append("file", file);
-  return api.post("/upload/preview", formData, {
-    headers: { "Content-Type": "multipart/form-data" },
-  });
+// ====== 数据同步 ======
+export const syncReviews = (shopId) => {
+  const params = shopId ? { shop_id: shopId } : {};
+  return api.post("/sync", null, { params });
 };
 
-export const uploadConfirm = (file, selectedIndices) => {
-  const formData = new FormData();
-  formData.append("file", file);
-  formData.append("selected", JSON.stringify(selectedIndices));
-  return api.post("/upload/confirm", formData, {
-    headers: { "Content-Type": "multipart/form-data" },
-  });
-};
+// ====== 店铺 ======
+export const getShops = () => api.get("/shops");
 
 // ====== 智能问答 ======
 export const chatQuery = (question) =>

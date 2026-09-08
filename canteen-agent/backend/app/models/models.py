@@ -30,6 +30,20 @@ class FeedbackStatus(str, enum.Enum):
     INEFFECTIVE = "ineffective"
 
 
+class Shop(Base):
+    """店铺 / 档口"""
+    __tablename__ = "shops"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False, comment="店铺/档口名称")
+    address = Column(String(200), comment="地址")
+    is_active = Column(Boolean, default=True, comment="是否营业")
+    created_at = Column(DateTime, server_default=func.now())
+
+    dishes = relationship("Dish", back_populates="shop")
+    reviews = relationship("Review", back_populates="shop")
+
+
 class Dish(Base):
     """菜品"""
     __tablename__ = "dishes"
@@ -40,8 +54,10 @@ class Dish(Base):
     unit_cost = Column(Float, default=0.0, comment="单份成本")
     price = Column(Float, default=0.0, comment="售价")
     is_active = Column(Boolean, default=True, comment="是否在售")
+    shop_id = Column(Integer, ForeignKey("shops.id"), comment="所属店铺ID")
     created_at = Column(DateTime, server_default=func.now())
 
+    shop = relationship("Shop", back_populates="dishes")
     reviews = relationship("Review", back_populates="dish")
     diagnoses = relationship("Diagnosis", back_populates="dish")
     sop_entries = relationship("SOPEntry", back_populates="dish")
@@ -62,6 +78,8 @@ class Review(Base):
     stall_name = Column(String(100), comment="档口名称（兼容旧数据）")
     dish_id = Column(Integer, ForeignKey("dishes.id"), comment="菜品ID")
     dish_name_raw = Column(String(200), comment="用户提及菜品名（原始）")
+    shop_id = Column(Integer, ForeignKey("shops.id"), comment="所属店铺ID")
+    synced_at = Column(DateTime, comment="同步分析时间（NULL=未同步）")
     risk_level = Column(Integer, default=1, comment="风险等级 1-5")
     dimensions = Column(JSON, comment="吐槽维度 JSON")
     is_valid = Column(Boolean, default=True, comment="是否有效评价")
@@ -69,6 +87,7 @@ class Review(Base):
     created_at = Column(DateTime, server_default=func.now())
 
     dish = relationship("Dish", back_populates="reviews")
+    shop = relationship("Shop", back_populates="reviews")
 
     __table_args__ = (
         Index("idx_source_ext_id", "source", "external_id"),

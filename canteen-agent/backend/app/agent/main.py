@@ -33,7 +33,7 @@ class DishAnalyzeResult(BaseModel):
 class ChatInput(BaseModel):
     question: str
 
-
+# todo：agent入口
 @app.post("/agent/analyze_dish")
 async def analyze_dish(input_data: DishAnalyzeInput) -> DishAnalyzeResult:
     initial_state: AgentState = {

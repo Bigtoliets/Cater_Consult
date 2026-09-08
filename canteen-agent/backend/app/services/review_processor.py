@@ -6,21 +6,33 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import Review, Dish, Sentiment, SystemConfig
 
-POSITIVE_WORDS = [
-    "好吃", "不错", "很好", "满意", "推荐", "棒", "赞", "香", "美味",
-    "新鲜", "嫩", "入味", "正宗", "分量足", "划算", "干净", "热情",
-    "喜欢", "爱", "绝了", "给力", "优秀", "完美", "超值", "惊喜",
-    "挺好的", "还可以", "还行", "不错哦", "不错啊", "好吃啊",
-]
+# 情感词典（带权重）：value 为权重，权重越高代表情感越强
+POSITIVE_WORDS = {
+    # 强好评
+    "美味": 3, "绝了": 3, "完美": 3,
+    # 明确好评
+    "好吃": 2, "很好": 2, "满意": 2, "推荐": 2, "棒": 2, "赞": 2,
+    "入味": 2, "正宗": 2, "分量足": 2, "划算": 2, "干净": 2, "热情": 2,
+    "给力": 2, "优秀": 2, "超值": 2, "惊喜": 2, "好吃啊": 2,
+    # 轻微好评
+    "不错": 1, "香": 1, "新鲜": 1, "嫩": 1, "喜欢": 1, "爱": 1,
+    "挺好的": 1, "还可以": 1, "还行": 1, "不错哦": 1, "不错啊": 1,
+}
 
-NEGATIVE_WORDS = [
-    "难吃", "差", "不好", "失望", "恶心", "咸", "太咸", "太淡", "没味道",
-    "不新鲜", "凉", "冷", "硬", "太硬", "软", "太软", "烂", "糊",
-    "少", "太少", "分量少", "贵", "太贵", "不值", "坑", "烂透了",
-    "不干净", "脏", "头发", "虫子", "异物", "变质", "馊", "臭",
-    "拉肚子", "肚子疼", "不舒服", "态度差", "慢", "太慢", "等太久",
-    "糊了", "焦", "生", "没熟", "腥", "油腻", "太油", "不好吃",
-]
+NEGATIVE_WORDS = {
+    # 严重 / 安全 / 异物（高权重）
+    "难吃": 3, "恶心": 3, "变质": 3, "馊": 3, "臭": 3,
+    "拉肚子": 3, "肚子疼": 3, "头发": 3, "虫子": 3, "异物": 3,
+    "烂透了": 3, "不好吃": 3, "生": 3, "没熟": 3,
+    # 明确负面（中权重）
+    "失望": 2, "咸": 2, "太咸": 2, "太淡": 2, "没味道": 2, "不新鲜": 2,
+    "太硬": 2, "太软": 2, "烂": 2, "糊": 2, "太少": 2, "分量少": 2,
+    "贵": 2, "太贵": 2, "不值": 2, "坑": 2, "不干净": 2, "脏": 2,
+    "不舒服": 2, "态度差": 2, "太慢": 2, "等太久": 2, "糊了": 2,
+    "焦": 2, "腥": 2, "油腻": 2, "太油": 2,
+    # 轻微负面（低权重）
+    "差": 1, "不好": 1, "凉": 1, "冷": 1, "硬": 1, "软": 1, "少": 1, "慢": 1,
+}
 
 DIMENSION_KEYWORDS = {
     "口味": ["咸", "淡", "甜", "辣", "酸", "苦", "没味道", "太咸", "太淡", "太辣", "不好吃", "难吃", "腥", "油腻", "糊"],
@@ -51,16 +63,55 @@ async def get_keyword_weights(db: AsyncSession) -> dict:
     return dict(DEFAULT_DIMENSION_WEIGHTS)
 
 
+NEGATION_WORDS = ("不是", "没有", "并不", "不太", "不怎么", "不", "没")
+
+
+def _is_negated(text: str, start: int) -> bool:
+    """判断情感词前面（≤3 字窗口）是否紧跟否定词"""
+    prefix = text[max(0, start - 3):start]
+    return any(nw in prefix for nw in NEGATION_WORDS)
+
+
 def _analyze_sentiment(text: str) -> str:
+    """情感分析：带权重的关键词匹配 + 否定翻转 + 平局偏负面
+
+    相比旧版（纯计数）：
+    1. 词按权重累加，而非每个词记 1 分
+    2. 否定词（不/没/不是...）出现在情感词前 3 字内 → 极性翻转
+    3. 正负打平时，只要存在负面词就判负面（业务上优先抓问题）
+    """
     if not text:
         return Sentiment.NEUTRAL.value
-    pos_score = sum(1 for w in POSITIVE_WORDS if w in text)
-    neg_score = sum(1 for w in NEGATIVE_WORDS if w in text)
+
+    pos_score = 0
+    neg_score = 0
+
+    # 正面词：命中加分，被否定则反转到负面（如「不是很好」→ 负面）
+    for word, weight in POSITIVE_WORDS.items():
+        idx = text.find(word)
+        if idx == -1:
+            continue
+        if _is_negated(text, idx):
+            neg_score += weight
+        else:
+            pos_score += weight
+
+    # 负面词：命中加分，被否定则反转到正面（如「不难吃」→ 正面）
+    for word, weight in NEGATIVE_WORDS.items():
+        idx = text.find(word)
+        if idx == -1:
+            continue
+        if _is_negated(text, idx):
+            pos_score += weight
+        else:
+            neg_score += weight
+
     if neg_score > pos_score:
         return Sentiment.NEGATIVE.value
-    elif pos_score > neg_score:
+    if pos_score > neg_score:
         return Sentiment.POSITIVE.value
-    return Sentiment.NEUTRAL.value
+    # 平局：有负面词就偏负面（抓问题优先），否则中性
+    return Sentiment.NEGATIVE.value if neg_score > 0 else Sentiment.NEUTRAL.value
 
 
 def _extract_dimensions(text: str) -> list:
