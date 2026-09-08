@@ -1,6 +1,7 @@
 """Agent 微服务入口 v4.0 — ReAct引擎 + 工具系统 + 记忆管理 + 幻觉防护"""
 import json
 import asyncio
+import re
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Dict, Optional
@@ -30,6 +31,7 @@ class DishAnalyzeInput(BaseModel):
     dish_id: str
     reviews: List[Dict]
     keyword_weights: Optional[Dict[str, float]] = None
+    persist: bool = True  # 分片分析时传 False，等合并后再统一沉淀
 
 
 class DishAnalyzeResult(BaseModel):
@@ -82,7 +84,7 @@ async def analyze_dish(input_data: DishAnalyzeInput) -> DishAnalyzeResult:
             print(f"[Hallucination] {input_data.dish_name}: {h_report.risk_level} - {len(h_report.issues)} issues")
 
         decision_id = ""
-        if detail:
+        if detail and input_data.persist:
             decision_id = new_decision_id()
             content_to_store = f"【菜品：{input_data.dish_name}】{summary}\n\n{detail}"
             asyncio.create_task(
@@ -107,6 +109,103 @@ async def analyze_dish(input_data: DishAnalyzeInput) -> DishAnalyzeResult:
             improvement_detail=None,
             human_review_required=True,
         )
+
+
+class MergeInput(BaseModel):
+    dish_name: str
+    dish_id: str
+    chunks: List[Dict]  # [{improvement_summary, improvement_detail, human_review_required}]
+
+
+MERGE_SYSTEM_PROMPT = """你是后厨品控指导专家。以下是对同一菜品「{dish_name}」的多个分片分析结果（每个分片分析了部分顾客评价）。请把它们合并成一份最终整改单。
+
+要求：
+1. 去重：相同或重复的整改建议合并为一条
+2. 归纳：把零散的分片摘要归纳成一句核心问题
+3. 完整：覆盖所有分片中提到的重要问题
+4. 严格按以下格式输出，不要展开废话：
+
+【一句话摘要】
+[一句话概括核心问题和根本原因，30字以内]
+
+【改进建议】
+1. [具体可执行步骤]
+2. [具体可执行步骤]
+3. [具体可执行步骤]
+"""
+
+
+def _parse_summary_detail(full_text: str) -> tuple[str, str]:
+    """从 LLM 输出解析 【一句话摘要】 和 【改进建议】"""
+    summary = ""
+    detail = ""
+    m = re.search(r'【一句话摘要】\s*\n?(.*?)(?:\n【改进建议】|\Z)', full_text, re.DOTALL)
+    if m:
+        summary = m.group(1).strip()
+        detail_start = full_text.find("【改进建议】")
+        detail = full_text[detail_start:].strip() if detail_start != -1 else full_text
+    else:
+        lines = full_text.strip().split("\n")
+        summary = lines[0].replace("【一句话摘要】", "").strip() if lines else full_text[:50]
+        detail = full_text
+    return summary, detail
+
+
+@app.post("/agent/merge_dish")
+async def merge_dish(input_data: MergeInput):
+    """把同一菜品的多个分片分析结果合并成一份最终整改单（并沉淀到 Milvus）"""
+    chunks = input_data.chunks or []
+    if not chunks:
+        return {
+            "dish_name": input_data.dish_name,
+            "dish_id": input_data.dish_id,
+            "decision_id": None,
+            "improvement_summary": None,
+            "improvement_detail": None,
+            "human_review_required": False,
+        }
+
+    # 单分片：直接透传，不额外调 LLM
+    if len(chunks) == 1:
+        summary = chunks[0].get("improvement_summary", "")
+        detail = chunks[0].get("improvement_detail", "")
+        human_review = bool(chunks[0].get("human_review_required", False))
+    else:
+        chunk_text = "\n\n".join(
+            f"### 分片 {i}\n摘要：{c.get('improvement_summary', '')}\n建议：{c.get('improvement_detail', '')}"
+            for i, c in enumerate(chunks, 1)
+        )
+        prompt = MERGE_SYSTEM_PROMPT.format(dish_name=input_data.dish_name) + f"\n\n{chunk_text}"
+        llm = get_llm()
+        result = await llm.ainvoke(prompt)
+        summary, detail = _parse_summary_detail(result.content)
+        human_review = any(bool(c.get("human_review_required", False)) for c in chunks)
+
+    # 幻觉检测
+    detector = get_detector()
+    h_report = detector.check(detail + summary, context={"dish_name": input_data.dish_name})
+    if h_report.has_hallucination:
+        warning = f"\n\n⚠️ **幻觉检测警告** (风险: {h_report.risk_level}):\n"
+        warning += "\n".join(f"- {i}" for i in h_report.issues[:3])
+        detail += warning
+
+    # 生成 decision_id + 沉淀到 Milvus
+    decision_id = ""
+    if detail:
+        decision_id = new_decision_id()
+        content_to_store = f"【菜品：{input_data.dish_name}】{summary}\n\n{detail}"
+        asyncio.create_task(
+            write_to_standard(decision_id, input_data.dish_name, content_to_store)
+        )
+
+    return {
+        "dish_name": input_data.dish_name,
+        "dish_id": input_data.dish_id,
+        "decision_id": decision_id or None,
+        "improvement_summary": summary or None,
+        "improvement_detail": detail or None,
+        "human_review_required": human_review or h_report.has_hallucination,
+    }
 
 
 class PromoteInput(BaseModel):

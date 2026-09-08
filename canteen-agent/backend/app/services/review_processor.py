@@ -50,6 +50,13 @@ DEFAULT_DIMENSION_WEIGHTS = {
     "口感": 1.5, "价格": 1.0, "服务": 1.0, "安全": 5.0,
 }
 
+REVIEW_CHUNK_SIZE = 80
+
+
+def chunk_reviews(reviews: list, chunk_size: int = REVIEW_CHUNK_SIZE) -> list[list]:
+    """把评论列表按 chunk_size 切成多个分片，供队列分批分析"""
+    return [reviews[i:i + chunk_size] for i in range(0, len(reviews), chunk_size)]
+
 
 async def get_keyword_weights(db: AsyncSession) -> dict:
     """从 SystemConfig 加载关键词权重（与默认值合并）"""
