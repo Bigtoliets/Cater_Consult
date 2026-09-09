@@ -54,7 +54,11 @@ class MemoryManager:
         self.message_count_since_compress = 0
         self.working_context: dict[str, Any] = {}  # 工作记忆
 
-    # ── 短期记忆 ──────────────────────────────────
+# - `short_term`：`deque`双向队列，最大长度`WINDOW_SIZE=20`，**滑动窗口短期记忆**，存完整原始消息；满了旧消息会被挤出去。
+# - `compressed_blocks`：被压缩后的历史摘要块，原始消息被压缩后不再保存在 short_term，只保留摘要。
+# - `key_facts`：从历史对话提取出来的关键点（比如：回锅肉盐度下调 10%、整改项 xxx），最多 8 条。
+# - `working_context`：**工作记忆**，字典，存放本次 Agent 运行中间状态，类似轻量 AgentState。
+    # ── 短期记忆 ───────────────────   ───────────────
 
     def add_message(self, role: str, content: str, metadata: dict = None):
         """添加消息到短期记忆"""

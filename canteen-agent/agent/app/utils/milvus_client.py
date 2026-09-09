@@ -69,6 +69,7 @@ async def search_with_score(collection_name: str, query: str, k: int = 3) -> lis
         col.load()
 
         query_vec = _embed_text(query)
+
         search_params = {"metric_type": "IP", "params": {"nprobe": 16}}
         results = col.search(
             data=[query_vec],
