@@ -1,27 +1,44 @@
-"""定时任务"""
-import httpx
-from datetime import date, datetime, timedelta
-from celery.utils.log import get_task_logger
+"""定时任务（由 APScheduler 调度，替代 Celery Beat）"""
+import logging
+from datetime import date
 
-from app.tasks.celery_app import celery_app
+from sqlalchemy import select, func
 
-logger = get_task_logger(__name__)
+from app.models.base import AsyncSessionLocal
+from app.models.models import Review, DailySummary, Sentiment
+
+logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="app.tasks.periodic_tasks.generate_daily_summary")
-def generate_daily_summary():
-    """生成每日品控日报 — 写入 DailySummary 缓存表"""
+async def auto_sync_new_reviews():
+    """自动同步：把「未同步」评论推入分析队列（默认每 5 分钟）
+
+    这是链路的自动入口 —— 只要评论进了 reviews 表（外部系统写入 / 导入脚本 /
+    直接 insert），下一轮就会自动走预处理与 Agent 深度加工，不需要人点按钮。
+    """
+    from app.services.sync_service import sync_pending_reviews
+
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await sync_pending_reviews(session)
+    except Exception as e:  # noqa: BLE001 — 一轮失败不该让调度器停摆
+        logger.error(f"[AutoSync] 自动同步失败: {e}")
+        return
+
+    if result.get("synced"):
+        logger.info(
+            f"[AutoSync] 已下发 {result['synced']} 条评论 / "
+            f"{result['dish_count']} 个菜品 batch_id={result['batch_id']}"
+        )
+
+
+async def generate_daily_summary():
+    """生成每日品控日报 — 写入 DailySummary 缓存表（每小时）"""
     logger.info("开始生成每日品控日报...")
-    import asyncio
-    from app.models.base import SyncSessionLocal
-    from app.models.models import Review, Dish, DailySummary, Sentiment
-    from sqlalchemy import select, func
-    from datetime import date
-
     today = date.today()
-    with SyncSessionLocal() as session:
-        # 查询今日有效评价
-        result = session.execute(
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
             select(Review).where(
                 func.date(Review.reviewed_at) == today,
                 Review.is_valid == True,
@@ -59,9 +76,9 @@ def generate_daily_summary():
         top_bad = sorted(dish_neg.values(), key=lambda x: x["count"], reverse=True)[:3]
 
         # 写入或更新 DailySummary
-        existing = session.execute(
+        existing = (await session.execute(
             select(DailySummary).where(func.date(DailySummary.date) == today)
-        ).scalar_one_or_none()
+        )).scalar_one_or_none()
 
         if existing:
             existing.total_reviews = total
@@ -82,60 +99,32 @@ def generate_daily_summary():
             )
             session.add(summary)
 
-        session.commit()
+        await session.commit()
     logger.info(f"每日品控日报生成完成，共 {total} 条评价")
 
 
-@celery_app.task(name="app.tasks.periodic_tasks.cleanup_old_data")
-def cleanup_old_data():
-    """清理过期数据"""
-    logger.info("开始清理过期数据...")
-    logger.info("过期数据清理完成")
-
-
-@celery_app.task(name="app.tasks.periodic_tasks.trigger_agent_analysis")
-def trigger_agent_analysis(review_ids: list):
-    """触发 Agent 分析指定评价"""
-    logger.info(f"触发 Agent 分析 {len(review_ids)} 条评价")
-    # 通过 RabbitMQ 发送消息给 Agent 微服务
-    logger.info("Agent 分析任务已下发")
-
-
-@celery_app.task(name="app.tasks.periodic_tasks.track_feedback_effectiveness")
-def track_feedback_effectiveness():
-    """v3.0: 追踪整改效果 — 每天执行一次，自动飞升/降级方案权重"""
-    import asyncio
-    from app.models.base import AsyncSessionLocal
+async def track_feedback_effectiveness():
+    """追踪整改效果 — 每天一次，自动飞升/降级方案权重"""
     from app.services.feedback_tracker import FeedbackTracker
 
-    async def _run():
+    try:
         async with AsyncSessionLocal() as db:
             tracker = FeedbackTracker(db)
             stats = await tracker.track_all_active_diagnoses()
             logger.info(f"[FeedbackTracker] 效果追踪完成: {stats}")
-            return stats
-
-    try:
-        stats = asyncio.run(_run())
-        logger.info(f"[FeedbackTracker] 追踪 {stats['tracked']} 条诊断, "
-                     f"飞升 {stats['promoted']} 条金标, "
-                     f"降级 {stats['demoted']} 条")
     except Exception as e:
         logger.error(f"[FeedbackTracker] 追踪失败: {e}")
 
 
-@celery_app.task(name="app.tasks.periodic_tasks.sync_sop_to_milvus")
-def sync_sop_to_milvus():
-    """v3.0: 将 MySQL SOP 知识条目同步到 Milvus 向量库 (sop_collection)"""
-    import asyncio
-    from app.models.base import SyncSessionLocal
-    from app.models.models import SOPEntry
-
-    # 同步逻辑: 遍历 SOPEntry 表, 对每个条目计算 embedding 并写入 sop_collection
-    # 当前用 placeholder, 完整实现需要引入 embedding 客户端
+async def sync_sop_to_milvus():
+    """将 MySQL SOP 知识条目同步到 Milvus 向量库 (sop_collection)"""
     logger.info("[SOP Sync] 开始同步 SOP 到 Milvus...")
-    with SyncSessionLocal() as session:
-        # TODO: 实现 SOP → Milvus 同步
-        # entries = session.query(SOPEntry).all()
-        logger.info(f"[SOP Sync] 同步完成")
+    # TODO: 实现 SOP → Milvus 同步
+    logger.info("[SOP Sync] 同步完成")
 
+
+async def cleanup_old_data():
+    """清理过期数据"""
+    logger.info("开始清理过期数据...")
+    # TODO: 实现清理逻辑
+    logger.info("过期数据清理完成")

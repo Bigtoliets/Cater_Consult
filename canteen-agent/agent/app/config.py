@@ -28,18 +28,11 @@ class AgentSettings(BaseSettings):
             return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}"
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}"
 
-    # === RabbitMQ ===
-    RABBITMQ_HOST: str = "192.168.10.20"
-    RABBITMQ_PORT: int = 5672
-    RABBITMQ_USER: str = "admin"
-    RABBITMQ_PASSWORD: str = "changeme_2024"
+    # === Backend 内部回调（写库 / 推告警由 backend 负责，agent 不直连 MySQL）===
+    BACKEND_INTERNAL_URL: str = "http://backend:8000"
 
-    @property
-    def RABBITMQ_URL(self) -> str:
-        return (
-            f"amqp://{self.RABBITMQ_USER}:{self.RABBITMQ_PASSWORD}"
-            f"@{self.RABBITMQ_HOST}:{self.RABBITMQ_PORT}/"
-        )
+    # === 消费者 ===
+    CONSUMER_CONCURRENCY: int = 4
 
     # === Agent ===
     AGENT_CONFIDENCE_THRESHOLD: float = 0.75

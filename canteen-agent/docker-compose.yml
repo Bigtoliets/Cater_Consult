@@ -2,6 +2,8 @@ version: "3.8"
 
 services:
   # ===== MySQL 8.0 =====
+  # 建表与种子数据由 backend 侧负责：backend 启动时会 create_all，
+  # 首次部署再执行一次 `docker compose exec backend python init_db.py` 灌种子数据。
   mysql:
     image: mysql:8.0
     container_name: canteen-mysql
@@ -13,7 +15,6 @@ services:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./scripts/sql:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
@@ -33,27 +34,6 @@ services:
       - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - canteen-net
-
-  # ===== RabbitMQ 3.12 =====
-  rabbitmq:
-    image: rabbitmq:3.12-management-alpine
-    container_name: canteen-rabbitmq
-    restart: unless-stopped
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -126,7 +106,7 @@ services:
     networks:
       - canteen-net
 
-  # ===== Backend (FastAPI) =====
+  # ===== Backend (FastAPI + APScheduler 定时任务) =====
   backend:
     build:
       context: ./backend
@@ -138,8 +118,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
     environment:
       MYSQL_HOST: ${MYSQL_HOST}
       MYSQL_PORT: ${MYSQL_PORT}
@@ -149,12 +127,10 @@ services:
       REDIS_HOST: ${REDIS_HOST}
       REDIS_PORT: ${REDIS_PORT}
       REDIS_PASSWORD: ${REDIS_PASSWORD}
-      RABBITMQ_HOST: ${RABBITMQ_HOST}
-      RABBITMQ_PORT: ${RABBITMQ_PORT}
-      RABBITMQ_USER: ${RABBITMQ_USER}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
       AGENT_INTERNAL_URL: ${AGENT_INTERNAL_URL}
       BACKEND_SECRET_KEY: ${BACKEND_SECRET_KEY}
+      # 自动同步间隔（分钟），0 = 关闭自动同步，只保留手动 POST /api/v1/sync
+      AUTO_SYNC_INTERVAL_MINUTES: ${AUTO_SYNC_INTERVAL_MINUTES:-5}
     ports:
       - "${BACKEND_PORT}:8000"
     volumes:
@@ -163,64 +139,38 @@ services:
     networks:
       - canteen-net
 
-  # ===== Celery Worker =====
-  celery_worker:
+  # ===== Agent 分析消费者（Redis Stream 消费组，多开即并发） =====
+  # 消费评论分片 → Supervisor-Worker 深度加工 → 回调 backend 写库
+  agent-consumer:
     build:
-      context: ./backend
+      context: ./agent
       dockerfile: Dockerfile
-    container_name: canteen-celery-worker
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    environment:
-      MYSQL_HOST: ${MYSQL_HOST}
-      MYSQL_PORT: ${MYSQL_PORT}
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DATABASE}
-      REDIS_HOST: ${REDIS_HOST}
-      REDIS_PORT: ${REDIS_PORT}
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      RABBITMQ_HOST: ${RABBITMQ_HOST}
-      RABBITMQ_PORT: ${RABBITMQ_PORT}
-      RABBITMQ_USER: ${RABBITMQ_USER}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
-      AGENT_INTERNAL_URL: ${AGENT_INTERNAL_URL}
-    volumes:
-      - ./backend:/app
-    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=4
-    networks:
-      - canteen-net
-
-  # ===== Celery Beat =====
-  celery_beat:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: canteen-celery-beat
+    container_name: canteen-agent-consumer
     restart: unless-stopped
     depends_on:
       redis:
         condition: service_healthy
-      rabbitmq:
+      milvus:
         condition: service_healthy
+      backend:
+        condition: service_started
     environment:
+      MILVUS_HOST: ${MILVUS_HOST}
+      MILVUS_PORT: ${MILVUS_PORT}
       REDIS_HOST: ${REDIS_HOST}
       REDIS_PORT: ${REDIS_PORT}
       REDIS_PASSWORD: ${REDIS_PASSWORD}
-      RABBITMQ_HOST: ${RABBITMQ_HOST}
-      RABBITMQ_PORT: ${RABBITMQ_PORT}
-      RABBITMQ_USER: ${RABBITMQ_USER}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
-      AGENT_INTERNAL_URL: ${AGENT_INTERNAL_URL}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      OPENAI_LLM_MODEL: ${OPENAI_LLM_MODEL}
+      OPENAI_EMBED_API_KEY: ${OPENAI_EMBED_API_KEY}
+      OPENAI_EMBED_BASE_URL: ${OPENAI_EMBED_BASE_URL}
+      OPENAI_EMBED_MODEL: ${OPENAI_EMBED_MODEL}
+      BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL:-http://backend:8000}
+      CONSUMER_CONCURRENCY: ${CONSUMER_CONCURRENCY:-4}
     volumes:
-      - ./backend:/app
-    command: celery -A app.tasks.celery_app beat --loglevel=info
+      - ./agent:/app
+    command: python -m app.consumer --consumer c1
     networks:
       - canteen-net
 
@@ -232,21 +182,14 @@ services:
     container_name: canteen-agent
     restart: unless-stopped
     depends_on:
-      rabbitmq:
-        condition: service_healthy
       milvus:
         condition: service_healthy
     environment:
-      RABBITMQ_URL: ${RABBITMQ_URL}
       MILVUS_HOST: ${MILVUS_HOST}
       MILVUS_PORT: ${MILVUS_PORT}
       REDIS_HOST: ${REDIS_HOST}
       REDIS_PORT: ${REDIS_PORT}
       REDIS_PASSWORD: ${REDIS_PASSWORD}
-      RABBITMQ_HOST: ${RABBITMQ_HOST}
-      RABBITMQ_PORT: ${RABBITMQ_PORT}
-      RABBITMQ_USER: ${RABBITMQ_USER}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL}
       OPENAI_LLM_MODEL: ${OPENAI_LLM_MODEL}
@@ -286,7 +229,6 @@ services:
 volumes:
   mysql_data:
   redis_data:
-  rabbitmq_data:
   etcd_data:
   minio_data:
   milvus_data:

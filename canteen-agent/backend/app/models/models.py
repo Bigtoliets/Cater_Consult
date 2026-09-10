@@ -82,6 +82,14 @@ class Review(Base):
     synced_at = Column(DateTime, comment="同步分析时间（NULL=未同步）")
     risk_level = Column(Integer, default=1, comment="风险等级 1-5")
     dimensions = Column(JSON, comment="吐槽维度 JSON")
+    label_source = Column(
+        String(10), default="dict",
+        comment="标签来源：dict=前置节点词典粗判 / llm=Agent 精判（回写覆盖）",
+    )
+    dimension_detail = Column(
+        JSON,
+        comment="Agent 精判的结构化维度 [{dimension,severity,count,evidence}]，前置节点不写",
+    )
     is_valid = Column(Boolean, default=True, comment="是否有效评价")
     reviewed_at = Column(DateTime, comment="评价时间")
     created_at = Column(DateTime, server_default=func.now())

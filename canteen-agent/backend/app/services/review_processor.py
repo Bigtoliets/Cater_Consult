@@ -1,10 +1,14 @@
 """上传后自动处理：情感分析 + 菜品匹配（支持关键词权重配置）
 在 Agent 管道之前做快速预处理，让数据导入后立即可在 Dashboard 看到。
 """
-from sqlalchemy import select, update
+import logging
+
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import Review, Dish, Sentiment, SystemConfig
+
+logger = logging.getLogger(__name__)
 
 # 情感词典（带权重）：value 为权重，权重越高代表情感越强
 POSITIVE_WORDS = {
@@ -49,13 +53,6 @@ DEFAULT_DIMENSION_WEIGHTS = {
     "口味": 1.0, "卫生": 3.0, "分量": 1.0, "温度": 1.0,
     "口感": 1.5, "价格": 1.0, "服务": 1.0, "安全": 5.0,
 }
-
-REVIEW_CHUNK_SIZE = 80
-
-
-def chunk_reviews(reviews: list, chunk_size: int = REVIEW_CHUNK_SIZE) -> list[list]:
-    """把评论列表按 chunk_size 切成多个分片，供队列分批分析"""
-    return [reviews[i:i + chunk_size] for i in range(0, len(reviews), chunk_size)]
 
 
 async def get_keyword_weights(db: AsyncSession) -> dict:
@@ -190,6 +187,9 @@ async def process_new_reviews(db: AsyncSession, review_ids: list[int]) -> dict:
         review.risk_level = _calc_risk_level(sentiment, review.dimensions or [], text)
         if review.dish_name_raw:
             review.dish_id = await match_dish(db, review.dish_name_raw)
+        # 前置节点只做召回：词典标签是"候选提示"，不是结论。
+        # Agent 深度加工后会回写精判结果并把 label_source 覆盖为 'llm'。
+        review.label_source = "dict"
         processed += 1
 
         # 收集高风险评价
@@ -200,13 +200,16 @@ async def process_new_reviews(db: AsyncSession, review_ids: list[int]) -> dict:
 
     # v3.0: 高风险评价即时推送告警
     if critical_reviews:
-        await _alert_critical_reviews(critical_reviews)
+        await _alert_critical_reviews(critical_reviews, db)
 
     return {"processed": processed}
 
 
-async def _alert_critical_reviews(reviews: list):
-    """v3.0: 对食安级别评价即时推送告警"""
+async def _alert_critical_reviews(reviews: list, db: AsyncSession | None = None):
+    """v3.0: 对食安级别评价即时推送告警
+
+    传 db 才会走 SystemConfig.push_rules 的自定义路由；不传就永远是默认通道。
+    """
     try:
         from app.push.dispatcher import get_dispatcher
         from app.push.base import Alert, AlertLevel
@@ -220,9 +223,9 @@ async def _alert_critical_reviews(reviews: list):
                         f"**评价内容**：{r.raw_text[:200]}\n"
                         f"**评价来源**：{r.source or '未知'}",
                 dish_name=r.dish_name_raw,
-            ))
-    except Exception as e:
-        print(f"[Alert] 推送失败: {e}")
+            ), db=db)
+    except Exception as e:  # noqa: BLE001 — 推送失败不影响主链路
+        logger.warning(f"[Alert] 推送失败: {e}")
 
 
 async def get_dish_review_groups(db: AsyncSession, review_ids: list[int]) -> dict[str, list]:
@@ -242,6 +245,7 @@ async def get_dish_review_groups(db: AsyncSession, review_ids: list[int]) -> dic
                 "reviews": [],
             }
         groups[key]["reviews"].append({
+            "review_id": r.id,  # Agent 精判后按此回写标签
             "raw_text": r.raw_text or "",
             "sentiment": r.sentiment.value if r.sentiment else "neutral",
             "dimensions": r.dimensions or [],

@@ -15,7 +15,6 @@ import json
 import re
 from app.state import AgentState
 from app.utils.llm import get_llm
-from app.nodes.keyword_aggregation import DEFAULT_DIMENSION_WEIGHTS
 
 NER_SYSTEM_PROMPT = """你是后厨品控NER专家。从顾客评价中提取结构化信息。
 

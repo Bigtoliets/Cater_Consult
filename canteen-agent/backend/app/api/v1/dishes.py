@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.models import get_db, Dish, Review, Diagnosis, Sentiment
+from app.models.models import FeedbackRecord
 
 router = APIRouter()
 
@@ -114,6 +115,41 @@ async def get_dish_reviews(
                 "reviewed_at": str(r.reviewed_at) if r.reviewed_at else None,
             }
             for r in reviews
+        ],
+    }
+
+
+@router.get("/{dish_id}/feedback")
+async def get_dish_feedback(
+    dish_id: int,
+    limit: int = 10,
+    db: AsyncSession = Depends(get_db),
+):
+    """整改效果追踪记录：整改前后差评率对比、是否自动飞升/降级"""
+    result = await db.execute(
+        select(FeedbackRecord)
+        .where(FeedbackRecord.dish_id == dish_id)
+        .order_by(FeedbackRecord.created_at.desc())
+        .limit(limit)
+    )
+    records = result.scalars().all()
+    return {
+        "dish_id": dish_id,
+        "count": len(records),
+        "records": [
+            {
+                "decision_id": r.decision_id,
+                "status": r.status.value if r.status else None,
+                "pre_negative_rate": r.pre_negative_rate,
+                "post_negative_rate_3d": r.post_negative_rate_3d,
+                "post_negative_rate_7d": r.post_negative_rate_7d,
+                "post_negative_rate_14d": r.post_negative_rate_14d,
+                "improvement_pct": r.improvement_pct,
+                "auto_promoted": r.auto_promoted,
+                "auto_demoted": r.auto_demoted,
+                "executed_at": str(r.executed_at) if r.executed_at else None,
+            }
+            for r in records
         ],
     }
 

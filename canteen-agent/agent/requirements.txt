@@ -1,12 +1,13 @@
+# 分析链路 + ReAct 问答
 langgraph>=0.2.0
-langchain>=0.2.0
 langchain-openai>=0.1
 langchain-milvus>=0.1
 pymilvus>=2.4.0
-pika>=1.3
+openai>=1.30
 redis>=5.0
 httpx>=0.27
+# 微服务（/agent/* 端点）
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 pydantic>=2.7
-
+pydantic-settings>=2.0

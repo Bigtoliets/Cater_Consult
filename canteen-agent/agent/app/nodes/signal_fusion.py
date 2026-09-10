@@ -8,8 +8,10 @@
 核心能力: 区分「口味偏好差异」和「生产品控波动」
 """
 from dataclasses import dataclass, field
+
 from app.state import AgentState
 
+# 维度默认权重：backend 的 SystemConfig.keyword_weights 会在运行时覆盖它
 DEFAULT_DIMENSION_WEIGHTS = {
     "口味": 1.0, "卫生": 3.0, "分量": 1.0, "温度": 1.0,
     "口感": 1.5, "价格": 1.0, "服务": 1.0, "安全": 5.0,
@@ -32,6 +34,7 @@ class QualitySignal:
 class ConflictAnalysis:
     """冲突分析结果"""
     signal_type: str           # preference_divergence / quality_fluctuation / consistent_complaint
+    dimension: str             # 所属维度（供审核员做事实比对，不用从描述里抠引号）
     description: str
     confidence: float
     should_trigger: bool
@@ -58,7 +61,9 @@ async def keyword_aggregation(state: AgentState) -> AgentState:
     conflicts = _detect_conflicts(signals)
 
     # ── Step 3: 生成融合摘要 ──
-    summary_parts = _build_fusion_summary(dish_name, reviews, signals, conflicts)
+    summary_parts = _build_fusion_summary(
+        dish_name, reviews, signals, conflicts, keyword_weights
+    )
 
     should_trigger = any(c.should_trigger for c in conflicts)
 
@@ -68,6 +73,7 @@ async def keyword_aggregation(state: AgentState) -> AgentState:
         "conflict_analysis": [
             {
                 "signal_type": c.signal_type,
+                "dimension": c.dimension,   # 显式维度名，供审核员做事实比对（不再靠正则抠引号）
                 "description": c.description,
                 "confidence": c.confidence,
                 "should_trigger": c.should_trigger,
@@ -151,6 +157,7 @@ def _detect_conflicts(signals: list[QualitySignal]) -> list[ConflictAnalysis]:
             # 少数人的口味偏好 → 不触发
             conflicts.append(ConflictAnalysis(
                 signal_type="preference_divergence",
+                dimension=s.dimension,
                 description=f"「{s.dimension}」维度存在口味偏好差异（{s.evidence_count}条差评，关键词: {', '.join(s.keywords[:3])}）",
                 confidence=0.65 + 0.3 * (s.evidence_count / 5),
                 should_trigger=False,
@@ -161,6 +168,7 @@ def _detect_conflicts(signals: list[QualitySignal]) -> list[ConflictAnalysis]:
             severity_label = "严重" if s.avg_severity >= 4 else "一般"
             conflicts.append(ConflictAnalysis(
                 signal_type="quality_fluctuation" if s.evidence_count < 8 else "consistent_complaint",
+                dimension=s.dimension,
                 description=f"「{s.dimension}」维度存在{severity_label}品控问题：{', '.join(s.keywords[:3])}（{s.evidence_count}条差评，严重度{s.avg_severity}/5）",
                 confidence=min(0.95, 0.5 + s.strength + (s.evidence_count / 20)),
                 should_trigger=True,
@@ -170,6 +178,7 @@ def _detect_conflicts(signals: list[QualitySignal]) -> list[ConflictAnalysis]:
             # 中低强度 → 持续观察
             conflicts.append(ConflictAnalysis(
                 signal_type="quality_fluctuation",
+                dimension=s.dimension,
                 description=f"「{s.dimension}」维度存在轻微品控波动（{s.evidence_count}条差评）",
                 confidence=0.4 + s.strength,
                 should_trigger=False,
@@ -184,6 +193,7 @@ def _build_fusion_summary(
     reviews: list[dict],
     signals: list[QualitySignal],
     conflicts: list[ConflictAnalysis],
+    weights: dict,
 ) -> list[str]:
     """生成信号融合摘要"""
     total = len(reviews)
@@ -219,7 +229,7 @@ def _build_fusion_summary(
         parts.append("### ✅ 未检测到需要处理的品控问题")
 
     # 维度详情
-    dim_weights = state.get("keyword_weights", DEFAULT_DIMENSION_WEIGHTS)
+    dim_weights = weights or DEFAULT_DIMENSION_WEIGHTS
     parts.append("### 📋 维度详情")
     for s in signals:
         icon = "🔴" if s.direction == "negative" and not s.is_preference else "🟡" if s.is_preference else "🟢"

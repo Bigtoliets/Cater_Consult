@@ -28,19 +28,6 @@ class Settings(BaseSettings):
             return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}"
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}"
 
-    # === RabbitMQ ===
-    RABBITMQ_HOST: str = "192.168.10.20"
-    RABBITMQ_PORT: int = 5672
-    RABBITMQ_USER: str = "admin"
-    RABBITMQ_PASSWORD: str = "changeme_2024"
-
-    @property
-    def RABBITMQ_URL(self) -> str:
-        return (
-            f"amqp://{self.RABBITMQ_USER}:{self.RABBITMQ_PASSWORD}"
-            f"@{self.RABBITMQ_HOST}:{self.RABBITMQ_PORT}/"
-        )
-
     # === OpenAI LLM ===
     OPENAI_API_KEY: str = "sk-your-api-key-here"
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
@@ -66,6 +53,11 @@ class Settings(BaseSettings):
     # === Backend ===
     BACKEND_SECRET_KEY: str = "dev-secret-change-in-production"
     BACKEND_PORT: int = 8000
+
+    # === 自动同步 ===
+    # 每隔多少分钟把「synced_at 为空」的评论推入分析队列；设为 0 表示关闭自动同步，
+    # 只保留 POST /api/v1/sync 手动触发。
+    AUTO_SYNC_INTERVAL_MINUTES: int = 5
 
     # === 推送通道 (v3.0 新增) ===
     WECOM_WEBHOOK_URL: str = ""         # 企业微信 Bot Webhook

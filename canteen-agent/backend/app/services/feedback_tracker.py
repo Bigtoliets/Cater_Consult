@@ -1,21 +1,38 @@
-"""整改效果追踪服务 (v3.0 新增)
+"""整改效果追踪服务
 
-跟踪整改单下发后的效果:
-1. 对比整改前后的差评率变化
-2. 自动飞升/降级方案权重
-3. 生成 FeedbackRecord
-4. 更新厨师画像
+跟踪整改单下发后的效果：
+1. 对比整改前后的差评率变化（3/7/14 天观察窗，窗口与判定逻辑在 feedback_windows.py）
+2. 有效 → 自动飞升金标；无效 → 标记失效
+3. 落一条 FeedbackRecord
 
-运行方式: Celery Beat 定时任务每天执行一次
+运行方式：APScheduler 定时任务，每天一次（app/tasks/periodic_tasks.py）
 """
-from datetime import date, timedelta
-from sqlalchemy import select, func
+import logging
+from datetime import datetime, timedelta
+
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import (
-    Review, Diagnosis, Dish, FeedbackRecord,
-    FeedbackStatus, Sentiment,
+    Diagnosis,
+    DiagnosisStatus,
+    FeedbackRecord,
+    FeedbackStatus,
+    Review,
+    Sentiment,
 )
+from app.services.feedback_windows import MIN_DAYS_FOR_VERDICT, evaluate, tracking_windows
+
+logger = logging.getLogger(__name__)
+
+# 纳入追踪的诊断状态：completed=已出报告，dispatched=已下发后厨。
+# 只认 completed 会把真正执行过的整改单漏掉 —— 而它们才是效果评估的对象。
+TRACKED_STATUSES = (DiagnosisStatus.COMPLETED, DiagnosisStatus.DISPATCHED)
+
+# 只回溯这么久以内的诊断
+TRACK_WINDOW_DAYS = 30
+# 整改前基线窗口
+BASELINE_DAYS = 7
 
 
 class FeedbackTracker:
@@ -25,148 +42,123 @@ class FeedbackTracker:
         self.db = db
 
     async def track_all_active_diagnoses(self) -> dict:
-        """追踪所有已下发但未验证效果的诊断"""
-        from datetime import datetime
-
-        # 查找最近 30 天内已下发的诊断（还没有 FeedbackRecord 的）
-        thirty_days_ago = datetime.now() - timedelta(days=30)
+        """追踪所有未验证效果的诊断，返回统计"""
+        now = datetime.now()
+        since = now - timedelta(days=TRACK_WINDOW_DAYS)
 
         result = await self.db.execute(
             select(Diagnosis).where(
-                Diagnosis.created_at >= thirty_days_ago,
-                Diagnosis.status == "completed",
+                Diagnosis.created_at >= since,
+                Diagnosis.status.in_(TRACKED_STATUSES),
                 Diagnosis.decision_id.isnot(None),
             )
         )
         diagnoses = result.scalars().all()
 
-        stats = {"tracked": 0, "promoted": 0, "demoted": 0, "skipped": 0}
+        stats = {"tracked": 0, "promoted": 0, "demoted": 0, "too_early": 0, "skipped": 0}
         for diag in diagnoses:
             try:
-                result = await self._track_one(diag)
-                stats["tracked"] += 1
-                if result.get("auto_promoted"):
-                    stats["promoted"] += 1
-                if result.get("auto_demoted"):
-                    stats["demoted"] += 1
-            except Exception as e:
-                print(f"[FeedbackTracker] {diag.decision_id} 追踪失败: {e}")
+                outcome = await self._track_one(diag, now)
+            except Exception as e:  # noqa: BLE001 — 单条失败不该中断整批
+                logger.warning(f"[FeedbackTracker] {diag.decision_id} 追踪失败: {e}")
                 stats["skipped"] += 1
+                continue
+
+            reason = outcome.get("reason")
+            if reason:
+                stats[reason] = stats.get(reason, 0) + 1
+            if outcome.get("tracked"):
+                stats["tracked"] += 1
+            if outcome.get("auto_promoted"):
+                stats["promoted"] += 1
+            if outcome.get("auto_demoted"):
+                stats["demoted"] += 1
 
         await self.db.flush()
         return stats
 
-    async def _track_one(self, diag: Diagnosis) -> dict:
+    async def _track_one(self, diag: Diagnosis, now: datetime) -> dict:
         """追踪单个诊断的整改效果"""
         if not diag.decision_id or not diag.dish_id:
-            return {"tracked": False}
+            return {"tracked": False, "reason": "skipped"}
 
-        # 检查是否已有反馈记录
+        # 已有反馈记录 → 不重复追踪
         existing = await self.db.execute(
-            select(FeedbackRecord).where(
-                FeedbackRecord.decision_id == diag.decision_id,
-            )
+            select(FeedbackRecord).where(FeedbackRecord.decision_id == diag.decision_id)
         )
         if existing.scalar_one_or_none():
-            return {"tracked": False, "reason": "already_tracked"}
+            return {"tracked": False}
 
-        # 计算整改前 7 天差评率
-        pre_start = (diag.created_at - timedelta(days=7)) if diag.created_at else datetime.now() - timedelta(days=7)
-        pre_end = diag.created_at or datetime.now()
-        pre_neg_rate = await self._calc_negative_rate(diag.dish_id, pre_start, pre_end)
-
-        # 如果整改时间不足 3 天，暂不评估
-        now = datetime.now()
-        if (now - (diag.created_at or now)).days < 3:
+        # 观察窗起点 = 诊断生成时刻（模型里没有 dispatched_at，这是当前能取到的最接近的起点）
+        executed_at = diag.created_at or now
+        windows = tracking_windows(executed_at, now)
+        if not windows[MIN_DAYS_FOR_VERDICT]["full"]:
             return {"tracked": False, "reason": "too_early"}
 
-        # 计算整改后 3/7/14 天差评率
-        post_3d = await self._calc_negative_rate(
-            diag.dish_id,
-            diag.created_at or now,
-            (diag.created_at or now) + timedelta(days=3),
+        pre_rate = await self._calc_negative_rate(
+            diag.dish_id, executed_at - timedelta(days=BASELINE_DAYS), executed_at
         )
-        post_7d = await self._calc_negative_rate(
-            diag.dish_id,
-            diag.created_at or now,
-            (diag.created_at or now) + timedelta(days=7),
-        )
-        post_14d = await self._calc_negative_rate(
-            diag.dish_id,
-            diag.created_at or now,
-            (diag.created_at or now) + timedelta(days=14),
-        )
+        post_rates = {
+            days: await self._calc_negative_rate(diag.dish_id, w["start"], w["end"])
+            for days, w in windows.items()
+        }
 
-        # 改善百分比 (负值 = 差评率下降 = 改善)
-        improvement_7d = post_7d - pre_neg_rate
-
-        # 自动飞升/降级
-        auto_promoted = False
-        auto_demoted = False
+        verdict = evaluate(pre_rate, post_rates[MIN_DAYS_FOR_VERDICT], windows)
         status = FeedbackStatus.EXECUTED
-
-        if pre_neg_rate > 0 and improvement_7d < -0.1:
-            # 差评率下降超过 10 个百分点 → 自动飞升金标
-            auto_promoted = True
+        if verdict["auto_promoted"]:
             status = FeedbackStatus.EFFECTIVE
             await self._auto_promote_to_gold(diag.decision_id)
-        elif pre_neg_rate > 0 and improvement_7d > 0.05:
-            # 差评率上升超过 5 个百分点 → 标记失效
-            auto_demoted = True
+        elif verdict["auto_demoted"]:
             status = FeedbackStatus.INEFFECTIVE
 
-        # 写入反馈记录
-        record = FeedbackRecord(
+        self.db.add(FeedbackRecord(
             decision_id=diag.decision_id,
             dish_id=diag.dish_id,
             status=status,
-            pre_negative_rate=round(pre_neg_rate, 3),
-            post_negative_rate_3d=round(post_3d, 3),
-            post_negative_rate_7d=round(post_7d, 3),
-            post_negative_rate_14d=round(post_14d, 3),
-            improvement_pct=round(improvement_7d, 3),
-            auto_promoted=auto_promoted,
-            auto_demoted=auto_demoted,
-            executed_at=diag.created_at,
-        )
-        self.db.add(record)
+            pre_negative_rate=round(pre_rate, 3),
+            post_negative_rate_3d=round(post_rates[3], 3),
+            post_negative_rate_7d=round(post_rates[7], 3),
+            post_negative_rate_14d=round(post_rates[14], 3),
+            improvement_pct=verdict["improvement"],
+            auto_promoted=verdict["auto_promoted"],
+            auto_demoted=verdict["auto_demoted"],
+            executed_at=executed_at,
+        ))
 
         return {
             "tracked": True,
-            "auto_promoted": auto_promoted,
-            "auto_demoted": auto_demoted,
+            "verdict": verdict["verdict"],
+            "auto_promoted": verdict["auto_promoted"],
+            "auto_demoted": verdict["auto_demoted"],
         }
 
-    async def _calc_negative_rate(
-        self, dish_id: int, start, end
-    ) -> float:
-        """计算指定时间段内某菜品的差评率"""
-        total_result = await self.db.execute(
-            select(func.count(Review.id)).where(
-                Review.dish_id == dish_id,
-                Review.reviewed_at >= start,
-                Review.reviewed_at < end,
-                Review.is_valid == True,
-            )
-        )
-        total = total_result.scalar() or 0
+    async def _calc_negative_rate(self, dish_id: int, start: datetime, end: datetime) -> float:
+        """指定时间段内某菜品的差评率（无样本返回 0.0）
 
-        neg_result = await self.db.execute(
-            select(func.count(Review.id)).where(
-                Review.dish_id == dish_id,
-                Review.reviewed_at >= start,
-                Review.reviewed_at < end,
-                Review.sentiment == Sentiment.NEGATIVE,
-                Review.is_valid == True,
-            )
+        sentiment 由 ORM 的 SAEnum 写入，存的是枚举名（'NEGATIVE'），
+        所以必须用枚举成员比较，不要写成裸字符串。
+        """
+        conditions = (
+            Review.dish_id == dish_id,
+            Review.reviewed_at >= start,
+            Review.reviewed_at < end,
+            Review.is_valid.is_(True),
         )
-        neg = neg_result.scalar() or 0
+        total = (await self.db.execute(
+            select(func.count(Review.id)).where(*conditions)
+        )).scalar() or 0
+        if total == 0:
+            return 0.0
 
-        return neg / total if total > 0 else 0.0
+        negative = (await self.db.execute(
+            select(func.count(Review.id)).where(*conditions, Review.sentiment == Sentiment.NEGATIVE)
+        )).scalar() or 0
+        return negative / total
 
     async def _auto_promote_to_gold(self, decision_id: str):
-        """自动飞升金标 (调用 Agent 微服务)"""
+        """自动飞升金标（调 Agent 微服务的 /agent/promote）"""
         import httpx
+
         from app.config import settings
 
         try:
@@ -175,14 +167,9 @@ class FeedbackTracker:
                     f"{settings.AGENT_INTERNAL_URL}/agent/promote",
                     json={"decision_id": decision_id},
                 )
-                if resp.status_code == 200:
-                    print(f"[FeedbackTracker] {decision_id} 自动飞升金标")
-        except Exception as e:
-            print(f"[FeedbackTracker] {decision_id} 自动飞升失败: {e}")
-
-
-async def track_effectiveness(db: AsyncSession) -> dict:
-    """便捷函数: 执行一次效果追踪"""
-    from datetime import datetime
-    tracker = FeedbackTracker(db)
-    return await tracker.track_all_active_diagnoses()
+            if resp.status_code == 200:
+                logger.info(f"[FeedbackTracker] {decision_id} 自动飞升金标成功")
+            else:
+                logger.warning(f"[FeedbackTracker] {decision_id} 自动飞升失败: HTTP {resp.status_code}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[FeedbackTracker] {decision_id} 自动飞升异常: {e}")

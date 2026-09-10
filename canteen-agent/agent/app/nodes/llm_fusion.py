@@ -8,7 +8,7 @@ v3.0 改进:
 """
 import re
 from app.state import AgentState
-from app.prompts.templates import DISH_IMPROVEMENT_PROMPT_V3
+from app.prompts.templates import DISH_IMPROVEMENT_PROMPT
 from app.utils.llm import get_llm
 
 
@@ -60,9 +60,12 @@ async def llm_fusion(state: AgentState) -> AgentState:
         for r in reviews
     )
 
+    # 终审打回时的修改意见：只有把它喂回 Prompt，「打回重写」才不是重抽一次
+    review_feedback = (state.get("rework_feedback") or "").strip() or "（无，本次为初版）"
+
     try:
         llm = get_llm()
-        prompt = DISH_IMPROVEMENT_PROMPT_V3.format(
+        prompt = DISH_IMPROVEMENT_PROMPT.format(
             dish_name=dish_name,
             keyword_summary=keyword_summary,
             review_samples=review_samples,
@@ -70,6 +73,7 @@ async def llm_fusion(state: AgentState) -> AgentState:
             conflict_analysis=conflict_text if conflict_text else "（未检测到冲突信号）",
             confidence_score=f"{confidence_score:.0%}",
             confidence_label=confidence_label,
+            review_feedback=review_feedback,
         )
         result = await llm.ainvoke(prompt)
         full_text = result.content

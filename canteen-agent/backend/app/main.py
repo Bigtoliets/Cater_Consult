@@ -10,6 +10,7 @@ from app.push.wechat_work import WechatWorkPusher
 from app.push.dingtalk import DingTalkPusher
 from app.push.email_pusher import EmailPusher
 from app.push.dispatcher import init_dispatcher, get_dispatcher
+from app.tasks.scheduler import init_scheduler
 
 
 @asynccontextmanager
@@ -38,9 +39,15 @@ async def lifespan(app: FastAPI):
     print(f"[Push] 已注册 {len(pushers)} 个推送通道: "
           f"{[p.channel_name for p in pushers]}")
 
+    # 启动定时任务调度器
+    scheduler = init_scheduler()
+    scheduler.start()
+    print("[Scheduler] 定时任务调度器已启动")
+
     yield
 
     # 关闭时
+    scheduler.shutdown(wait=False)
     await engine.dispose()
 
 
@@ -95,16 +102,6 @@ async def health_check():
         services["redis"] = "connected"
     except Exception:
         services["redis"] = "disconnected"
-
-    # RabbitMQ
-    try:
-        import pika
-        params = pika.URLParameters(settings.RABBITMQ_URL)
-        conn = pika.BlockingConnection(params)
-        conn.close()
-        services["rabbitmq"] = "connected"
-    except Exception:
-        services["rabbitmq"] = "disconnected"
 
     all_ok = all(v == "connected" for v in services.values())
     return {
