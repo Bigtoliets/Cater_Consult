@@ -25,16 +25,23 @@ class ToolResult:
 
     def format_for_llm(self) -> str:
         """格式化为LLM可理解的字符串"""
+        # 分支1：工具调用失败（success=False），输出错误文本给LLM看
         if not self.success:
             return f"[工具错误] {self.error}"
 
+        # 拼接附加标签：来源标记、置信度标记
         source_tag = f" (来源: {self.source})" if self.source else ""
         conf_tag = f" [置信度: {self.confidence:.0%}]" if self.confidence < 1.0 else ""
 
+        # 分支2：data本身就是字符串，直接拼接标签返回
         if isinstance(self.data, str):
             return f"{self.data}{source_tag}{conf_tag}"
+
+        # 分支3：data是字典/列表，转格式化JSON字符串，大模型擅长读JSON
         elif isinstance(self.data, (list, dict)):
             return json.dumps(self.data, ensure_ascii=False, indent=2) + source_tag + conf_tag
+
+        # 分支4：其他类型(int/float/Pydantic对象等)，强制转字符串
         return str(self.data) + source_tag + conf_tag
 
 
