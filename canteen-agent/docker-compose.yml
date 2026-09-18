@@ -3,7 +3,7 @@ version: "3.8"
 services:
   # ===== MySQL 8.0 =====
   # 建表与种子数据由 backend 侧负责：backend 启动时会 create_all，
-  # 首次部署再执行一次 `docker compose exec backend python init_db.py` 灌种子数据。
+  # 首次部署再执行一次 `docker compose e xec backend python init_db.py` 灌种子数据。
   mysql:
     image: mysql:8.0
     container_name: canteen-mysql
