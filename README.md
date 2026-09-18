@@ -31,7 +31,7 @@
                                           │
                                    ┌──────▼──────┐
                                    │   Milvus     │
-                                   │  五库向量    │
+                                   │  六库向量    │
                                    └─────────────┘
 ```
 
@@ -41,7 +41,7 @@
 | 主后端 | FastAPI + SQLAlchemy(async) + APScheduler（内嵌定时任务） |
 | Agent | LangGraph + LangChain + Milvus + OpenAI 兼容 LLM |
 | 分析消费者 | 独立进程，Redis Stream 消费组，多开即并发 |
-| 存储 | MySQL 8.0（业务） + Redis 7（队列/锁） + Milvus（向量） |
+| 存储 | MySQL 8.0（业务） + Redis 7（队列/锁） + Milvus（6 集合：5 品控库 + 会话记忆） |
 
 ---
 
@@ -64,6 +64,15 @@
   │
   ├─ ⑤ 回调 backend：写 diagnoses + 回写评论精判标签 + 需复核时推 WARNING
   └─ ⑥ 沉淀 Milvus → 效果追踪（3/7/14 天差评率）→ 有效则自动飞升金标
+```
+
+### 智能问答链路（独立于品控诊断）
+
+```
+前端 /chat → Backend /api/v1/chat/query（SSE）→ Agent /agent/chat
+  → ReAct（原生 function calling，最多 5 轮，8 个工具）
+  → 每步 WAL 落 Redis（chat:turn:{turn_id}，TTL 24h）+ 结构化 JSON 追踪日志
+  → 断线后前端凭 turn_id 调 /api/v1/chat/resume/{turn_id}：先补齐未完成的工具调用，再继续循环
 ```
 
 ---
