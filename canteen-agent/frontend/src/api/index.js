@@ -61,8 +61,16 @@ export const syncReviews = (shopId) => {
 export const getShops = () => api.get("/shops");
 
 // ====== 智能问答 ======
-export const chatQuery = (question) =>
-  api.post("/chat/query", null, { params: { question } });
+// SSE 流走原生 fetch（axios 不方便读流），这里只放 URL 构造和 turn 状态查询
+export const CHAT_QUERY_URL = "/api/v1/chat/query";
+
+export const chatResumeUrl = (turnId, sessionId) =>
+  `/api/v1/chat/resume/${turnId}?session_id=${encodeURIComponent(sessionId)}`;
+
+// turn_id / session_id 都由前端生成：断了以后凭它们续跑
+// （追踪与恢复的实现见 agent/app/chat/turn_store.py）
+export const getChatTurn = (turnId, sessionId) =>
+  api.get(`/chat/turns/${turnId}`, { params: { session_id: sessionId } });
 
 export const getPresetQuestions = () =>
   api.get("/chat/presets");

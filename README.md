@@ -113,7 +113,7 @@ cd frontend && npm run dev
 |------|------|------|
 | 首页仪表盘 | `/` | 全局情绪指数、红黑榜 TOP3、AI 改进摘要表、金标飞升 |
 | 菜品详情 | `/dish/:id` | 单菜品评价趋势、AI 诊断报告、下发 / 驳回 |
-| 智能问答 | `/chat` | ReAct（原生 function calling）+ 8 个工具 + 记忆 + 幻觉防护 |
+| 智能问答 | `/chat` | ReAct（原生 function calling）+ 8 个工具 + 记忆 + 幻觉防护；每步 checkpoint，断线凭 turn_id 续跑 |
 | 系统配置 | `/agent` | 同步触发、敏感词、关键词权重、推送规则 |
 
 ---

@@ -1,9 +1,13 @@
-"""Milvus 向量库连接工具 — 双库（standard / gold）"""
+"""Milvus 向量库连接工具 — 双库（standard / gold）+ 问答会话记忆库（memory）"""
+import logging
+
 from pymilvus import connections, Collection, utility
 from langchain_milvus import Milvus
 from app.utils.llm import get_embeddings
 from app.config import agent_settings
 from openai import OpenAI
+
+logger = logging.getLogger(__name__)
 
 _embed_client = None
 
@@ -60,8 +64,13 @@ def get_milvus_store(collection_name: str) -> Milvus:
     return _stores[collection_name]
 
 
-async def search_with_score(collection_name: str, query: str, k: int = 3) -> list[dict]:
-    """向量检索（pymilvus 原生，绕过 langchain 兼容问题），返回 [{content, score, metadata}]"""
+async def search_with_score(
+    collection_name: str, query: str, k: int = 3, expr: str | None = None
+) -> list[dict]:
+    """向量检索（pymilvus 原生，绕过 langchain 兼容问题），返回 [{content, score, metadata}]
+
+    expr: 可选标量过滤表达式（例如只取某个会话的记忆），None = 不过滤。
+    """
     import traceback
     _ensure_pymilvus()
     try:
@@ -77,6 +86,7 @@ async def search_with_score(collection_name: str, query: str, k: int = 3) -> lis
             param=search_params,
             limit=k,
             output_fields=["decision_id", "content"],
+            expr=expr,
         )
 
         items = []
@@ -117,6 +127,28 @@ async def write_to_standard(decision_id: str, dish_name: str, content: str) -> d
         return {"status": "written", "decision_id": decision_id}
     except Exception as e:
         print(f"[Milvus] 写入失败 decision_id={decision_id}: {e}")
+        traceback.print_exc()
+        return {"status": "error", "error": str(e)}
+
+
+async def write_to_memory(decision_id: str, content: str) -> dict:
+    """问答会话记忆写入 memory_collection
+
+    单独一个库的原因：会话记忆（Q/A 摘要）和菜品经验是两种东西。以前写进
+    standard_collection，会被「普通经验」检索当成整改经验引用，甚至能被飞升成金标。
+    """
+    import traceback
+    _ensure_pymilvus()
+    try:
+        col = Collection("memory_collection")
+        col.load()
+        vector = _embed_text(content)
+        col.insert([[decision_id], [content], [vector]])
+        col.flush()
+        logger.info(f"[Milvus] 会话记忆写入成功 id={decision_id}")
+        return {"status": "written", "decision_id": decision_id}
+    except Exception as e:
+        logger.warning(f"[Milvus] 会话记忆写入失败 id={decision_id}: {e}")
         traceback.print_exc()
         return {"status": "error", "error": str(e)}
 

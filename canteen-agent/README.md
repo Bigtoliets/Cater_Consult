@@ -73,6 +73,10 @@
 
 **五库检索**：`sop` / `pattern` / `cycle` / `gold` / `standard`，加权合并后作为整改单的上下文。
 
+问答链路另有一层**会话记忆**：短期记忆（滑动窗口 + 压缩摘要）拼进当轮消息链，
+长期记忆（Q/A 摘要）写 `memory_collection` 并按会话过滤 —— 既不串会话，
+也不混进上面这五个品控知识库。
+
 ---
 
 ## 📸 界面预览
@@ -151,7 +155,7 @@ npm run dev
 |------|------|------|
 | 首页仪表盘 | `/` | 全局情绪指数、红黑榜 TOP3、AI 改进摘要表、金标飞升 |
 | 菜品详情 | `/dish/:id` | 单菜品评价趋势、AI 诊断报告、下发 / 驳回 |
-| 智能问答 | `/chat` | ReAct（原生 function calling）+ 工具 + 记忆 + 幻觉防护 |
+| 智能问答 | `/chat` | ReAct（原生 function calling）+ 工具 + 记忆 + 幻觉防护；每步 checkpoint，断线凭 turn_id 续跑 |
 | 系统配置 | `/agent` | 同步触发、敏感词、关键词权重、推送规则 |
 
 ---
@@ -192,6 +196,7 @@ canteen-agent/
 │   │   ├── agents/               # 六个 Worker + Supervisor
 │   │   ├── nodes/                # NER / 信号融合 / 置信度 / LLM 整改单
 │   │   ├── react/ tools/ memory/ # ReAct 问答引擎、8 个工具、三层记忆
+│   │   ├── chat/                 # turn checkpoint（Redis）、并发锁、结构化追踪日志
 │   │   ├── prompts/              # Supervisor / ReAct / 整改单 Prompt
 │   │   └── utils/                # LLM、Milvus、五库检索、幻觉检测
 │   ├── tests/                    # 离线自测（护栏 / 交付契约 / 端到端）

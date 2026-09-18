@@ -1,4 +1,7 @@
-"""Milvus 向量库初始化 v3.0 — 五 Collection
+"""Milvus 向量库初始化 v3.1 — 六 Collection
+
+前五个是菜品品控知识库（retriever 的「五库检索」只读这五个）；
+memory_collection 单独放问答会话记忆，避免 Q/A 摘要混进经验检索。
 
 运行: python init_milvus.py
 """
@@ -17,6 +20,7 @@ COLLECTION_CONFIGS = {
     "sop_collection": "标准工艺库（菜品标准操作流程）",
     "pattern_collection": "问题模式库（问题→根因→方案映射）",
     "cycle_collection": "周期规律库（季节/周度/时段品控规律）",
+    "memory_collection": "问答会话记忆库（Q/A 摘要，按 session 隔离）",
 }
 
 

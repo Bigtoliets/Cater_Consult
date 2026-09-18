@@ -10,6 +10,7 @@
 - 关键点提取: 每 N 轮对话自动提取关键事实为 bullet points
 - 触发条件: 总 token 估算超过阈值 (默认 3000 tokens) 时触发压缩
 """
+import hashlib
 import json
 import time
 from collections import deque
@@ -170,22 +171,33 @@ class MemoryManager:
     async def store_episode(
         self, session_id: str, question: str, answer: str, metadata: dict = None
     ):
-        """存储完整对话片段到长期记忆 (写入 Milvus)"""
+        """存储完整对话片段到长期记忆（memory_collection，按会话打标）
+
+        id 形如 MEM-{会话标签}-{turn_id}：检索时靠它做标量过滤，
+        保证 A 用户的记忆不会被 B 用户的问题召回，也不会混进菜品经验库。
+        """
         # 生成摘要作为向量化内容
         summary = f"Q: {question[:200]}\nA: {answer[:400]}"
         try:
-            from app.utils.milvus_client import write_to_standard
+            from app.utils.milvus_client import write_to_memory
             import uuid
-            ep_id = f"MEM-{uuid.uuid4().hex[:8].upper()}"
-            await write_to_standard(ep_id, session_id[:50], summary)
+            turn_id = str((metadata or {}).get("turn_id") or "")
+            suffix = turn_id if len(turn_id) == 32 else uuid.uuid4().hex[:8].upper()
+            ep_id = f"MEM-{_session_tag(session_id)}-{suffix}"
+            await write_to_memory(ep_id, summary)
         except Exception as e:
-            print(f"[Memory] 长期记忆写入失败: {e}")
+            print(f"[Memory] 长期记忆写入失败（memory_collection 建了吗？跑 python init_milvus.py）: {e}")
 
     async def retrieve_relevant(self, query: str, session_id: str, k: int = 3) -> str:
-        """从长期记忆中检索相关历史对话"""
+        """从长期记忆中检索「本会话」的相关历史对话（跨会话不串味）"""
+        if not session_id:
+            return ""
         try:
             from app.utils.milvus_client import search_with_score
-            results = await search_with_score("standard_collection", query, k=k)
+            results = await search_with_score(
+                "memory_collection", query, k=k,
+                expr=f'decision_id like "MEM-{_session_tag(session_id)}-%"',
+            )
             if not results:
                 return ""
             parts = ["## 历史相关记忆"]
@@ -197,8 +209,12 @@ class MemoryManager:
 
     # ── 完整上下文构建 ──────────────────────────────────
 
-    def build_context(self, system_prompt: str, current_question: str) -> list[dict]:
-        """构建完整的对话上下文 (含压缩块 + 关键事实 + 滑动窗口)"""
+    def build_context(self, system_prompt: str, current_question: str | None = None) -> list[dict]:
+        """构建完整的对话上下文 (含压缩块 + 关键事实 + 滑动窗口)
+
+        current_question 传 None 时只返回历史（调用方自己追加当前问题），
+        避免调用方把同一个问题写进消息链两次。
+        """
         messages = [{"role": "system", "content": system_prompt}]
 
         # 注入压缩记忆
@@ -221,8 +237,9 @@ class MemoryManager:
         # 滑动窗口消息
         messages.extend(self.get_recent_messages())
 
-        # 当前问题
-        messages.append({"role": "user", "content": current_question})
+        # 当前问题（调用方没让拼就跳过）
+        if current_question:
+            messages.append({"role": "user", "content": current_question})
 
         return messages
 
@@ -234,6 +251,11 @@ class MemoryManager:
 
     def get_working(self, key: str, default: Any = None) -> Any:
         return self.working_context.get(key, default)
+
+
+def _session_tag(session_id: str) -> str:
+    """会话标签：8 位 md5。只用于 memory_collection 的标量过滤，不反向暴露 session_id"""
+    return hashlib.md5((session_id or "").encode("utf-8")).hexdigest()[:8]
 
 
 # ── 全局会话记忆池 ──

@@ -14,7 +14,7 @@
 - LLM 输出不可解析 → 降级 rule_fallback（确定性链路）
 """
 import logging
-from json import JSONDecoder
+from json import JSONDecodeError, JSONDecoder
 
 from app.prompts.supervisor_prompts import (
     SUPERVISOR_SYSTEM_PROMPT,
@@ -120,7 +120,7 @@ def _iter_json_objects(text: str):
             return
         try:
             obj, end = decoder.raw_decode(text[start:])
-        except json.JSONDecodeError:
+        except JSONDecodeError:
             idx = start + 1
             continue
         if isinstance(obj, dict):
@@ -271,7 +271,9 @@ async def supervisor_node(state: AgentState) -> dict:
     """决策节点：只返回增量，不返回 {**state}（见 state.py 的约定）"""
     steps = state.get("steps", 0)
     max_steps = state.get("max_steps", MAX_STEPS)
+    # 调用轨迹
     used = list(state.get("agents_used") or [])
+    # 各 Worker 已调用次数（护栏）
     attempts = dict(state.get("attempts") or {})
 
     # 护栏①：轮数超限 → 强制收口。注意这里刻意不过 _sanitize：它会把这句 FINISH
@@ -286,6 +288,7 @@ async def supervisor_node(state: AgentState) -> dict:
 
     next_worker = decision["next"] if forced else _sanitize(decision["next"], state)
     # 目标被护栏改写时，原指令不再适用
+    # decision：{"next": "analyst", "instruction": "重点看口味维度", "reason": "还没分析"}
     instruction = decision["instruction"] if next_worker == decision["next"] else ""
 
     updates: dict = {

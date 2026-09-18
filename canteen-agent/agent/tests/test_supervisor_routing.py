@@ -202,6 +202,46 @@ async def main():
     check("定向指令被记录",
           (upd.get("instructions") or {}).get("prescriber") == "简单客诉，不必查库")
 
+    print("\n[10] 决策解析容错（LLM 输出里混入非法花括号时曾经直接 NameError）")
+    check("残缺花括号在前 → 跳过它取后面那个决策",
+          S._parse_decision('{"a": } 然后 {"next":"extractor"}')
+          == {"next": "extractor", "instruction": "", "reason": ""})
+    check("只有残缺 JSON → 返回 None 交给兜底",
+          S._parse_decision('{"a": }') is None)
+    check("白话里夹花括号 → 仍能抠出后面的决策",
+          S._parse_decision('它说 {先分析} 再决定 {"next": "auditor", "reason": "先审结论"}')
+          == {"next": "auditor", "instruction": "", "reason": "先审结论"})
+    check("空字符串 → None", S._parse_decision("") is None)
+    check("包在数组里也能抠出来",
+          S._parse_decision('[{"next":"retriever"}]')["next"] == "retriever")
+    check("多个决策 → 取第一个",
+          S._parse_decision('{"next":"analyst"} {"next":"reporter"}')["next"] == "analyst")
+    check("null 字段 → 归一成空字符串",
+          S._parse_decision('{"next":"prescriber","instruction":null,"reason":null}')["instruction"] == "")
+    check("值带空格 → strip",
+          S._parse_decision('{"next":"  analyst  "}')["next"] == "analyst")
+    check("非法目标不在解析层拦（交给 _sanitize）",
+          S._parse_decision('{"next":"superman"}')["next"] == "superman")
+
+    _REPLY["text"] = '{"a": } 然后 {"next": "analyst"}'
+    trace, _ = await drive({})
+    check("混入非法花括号后整条链路照常走完", trace[-1] == "FINISH", f"实际: {trace}")
+
+    print("\n[11] 提示词契约：系统提示词里的示例必须与解析器/护栏对得上")
+    import re as _re
+    from app.prompts.supervisor_prompts import SUPERVISOR_SYSTEM_PROMPT
+    legal = set(S.WORKERS) | {S.ROUTE_FINISH}
+    # 只取形如 worker 名的取值，跳过「输出格式」那行里的占位符 "worker名或FINISH"
+    raw = set(_re.findall(r'"next"\s*:\s*"([^"]+)"', SUPERVISOR_SYSTEM_PROMPT))
+    mentioned = {m for m in raw if m.isascii() and m.replace("_", "").isalnum()}
+    check(f"示例里的 next 全是合法目标 {sorted(mentioned)}",
+          bool(mentioned) and mentioned <= legal, f"非法: {sorted(mentioned - legal)}")
+    check("输出格式行只放了占位符，没混进具体 worker 名",
+          "worker名或FINISH" in raw, f"实际: {sorted(raw)}")
+    check("示例数量 ≥ 3（太少起不到示范作用）",
+          SUPERVISOR_SYSTEM_PROMPT.count('"next"') >= 3,
+          f"实际: {SUPERVISOR_SYSTEM_PROMPT.count('\"next\"')}")
+
     print(f"\n{'=' * 46}\n通过 {len(PASSED)} 项，失败 {len(FAILED)} 项")
     if FAILED:
         print("失败项: " + "; ".join(FAILED))

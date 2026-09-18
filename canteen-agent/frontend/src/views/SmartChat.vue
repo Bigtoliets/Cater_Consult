@@ -48,6 +48,14 @@
             </div>
           </div>
 
+          <div v-if="hasPending" class="resume-banner">
+            <span>上次的回答还没跑完，可以接着看。</span>
+            <el-button size="small" type="primary" :loading="isStreaming" @click="resumePendingTurn">
+              继续上次回答
+            </el-button>
+            <el-button size="small" text @click="discardPendingTurn">忽略</el-button>
+          </div>
+
           <div class="chat-input">
             <el-input
               v-model="inputText"
@@ -104,7 +112,7 @@
 
 <script setup>
 import { ref, nextTick, onMounted } from "vue";
-import { getPresetQuestions } from "../api";
+import { CHAT_QUERY_URL, chatResumeUrl, getChatTurn, getPresetQuestions } from "../api";
 import { marked } from "marked";
 
 const messages = ref([]);
@@ -113,6 +121,57 @@ const isStreaming = ref(false);
 const streamingContent = ref("");
 const chatMessages = ref(null);
 const presetQuestions = ref([]);
+const hasPending = ref(false);
+
+// ── 会话与「没跑完的 turn」的本地标识 ────────────────────────
+// turn_id 由前端生成：断线/刷新后凭它调 resume 接着看
+// （checkpoint 存在 agent 侧 Redis，保留 24h）
+const SESSION_KEY = "fb_chat_session";
+const PENDING_KEY = "fb_pending_turn";
+
+function uuid() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
+function getSessionId() {
+  let sid = null;
+  try {
+    sid = localStorage.getItem(SESSION_KEY);
+  } catch (e) {
+    sid = null;
+  }
+  if (!sid) {
+    sid = "web-" + uuid().replace(/-/g, "").slice(0, 16);
+    try {
+      localStorage.setItem(SESSION_KEY, sid);
+    } catch (e) {
+      // localStorage 不可用时退化成「单次会话」
+    }
+  }
+  return sid;
+}
+
+function readPending() {
+  try {
+    return JSON.parse(localStorage.getItem(PENDING_KEY) || "null");
+  } catch (e) {
+    return null;
+  }
+}
+
+function writePending(pending) {
+  try {
+    if (pending) localStorage.setItem(PENDING_KEY, JSON.stringify(pending));
+    else localStorage.removeItem(PENDING_KEY);
+  } catch (e) {
+    // 存不了也不影响本次问答，只是刷新后接不上
+  }
+  hasPending.value = !!pending;
+}
 
 onMounted(async () => {
   try {
@@ -126,6 +185,10 @@ onMounted(async () => {
       "本周食品安全相关投诉汇总",
     ];
   }
+  // 刷新/重开页面：先探测有没有没跑完的 turn，有就接着看
+  const pending = readPending();
+  hasPending.value = !!pending;
+  if (pending) await resumePendingTurn();
 });
 
 function scrollToBottom() {
@@ -140,61 +203,131 @@ async function sendMessage() {
   const text = inputText.value.trim();
   if (!text || isStreaming.value) return;
 
+  const sessionId = getSessionId();
+  const turnId = uuid();
+
   messages.value.push({ role: "user", content: text });
   inputText.value = "";
   scrollToBottom();
+  // 先把 turn_id 记下来，再发请求：这样首帧还没到就断线也接得上
+  writePending({ turn_id: turnId, session_id: sessionId, question: text, started_at: Date.now() });
 
+  await runStream(CHAT_QUERY_URL, { question: text, session_id: sessionId, turn_id: turnId });
+}
+
+async function resumePendingTurn() {
+  const pending = readPending();
+  if (!pending || isStreaming.value) return;
+
+  let status = null;
+  try {
+    status = (await getChatTurn(pending.turn_id, pending.session_id)).data;
+  } catch (e) {
+    status = e?.response?.data || null; // 410 已过期 / 404 不属于本会话 / 503 agent 挂了
+  }
+
+  if (status?.status === "completed" && status.final_answer) {
+    messages.value.push({ role: "ai", content: status.final_answer });
+    writePending(null);
+    scrollToBottom();
+    return;
+  }
+  if (status?.status === "running") {
+    if (pending.question) messages.value.push({ role: "user", content: pending.question });
+    await runStream(chatResumeUrl(pending.turn_id, pending.session_id), null);
+    return;
+  }
+  // 已过期 / 已放弃 / 探不到：清掉本地记录，别让用户对着一个死 turn 反复点
+  writePending(null);
+  if (status?.error) {
+    messages.value.push({ role: "ai", content: "上次的分析已经接不上了：" + status.error });
+  }
+}
+
+function discardPendingTurn() {
+  writePending(null);
+}
+
+async function runStream(url, body) {
   isStreaming.value = true;
   streamingContent.value = "";
-
   try {
-    // 使用 SSE 流式获取回复
-    const response = await fetch("/api/v1/chat/query?question=" + encodeURIComponent(text), {
+    const response = await fetch(url, {
       method: "POST",
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
     });
+    if (!response.ok) {
+      messages.value.push({ role: "ai", content: "抱歉，无法继续：" + (await readError(response)) });
+      return;
+    }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-
+    let buffer = "";
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split("\n");
-
-      for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          try {
-            const data = JSON.parse(line.slice(6));
-            if (data.content) {
-              streamingContent.value += data.content;
-              scrollToBottom();
-            }
-            if (data.done) {
-              messages.value.push({
-                role: "ai",
-                content: streamingContent.value,
-                dataCards: data.cards || [],
-              });
-              streamingContent.value = "";
-            }
-            if (data.error) {
-              messages.value.push({ role: "ai", content: "抱歉，处理出错：" + data.error });
-              streamingContent.value = "";
-            }
-          } catch (e) {
-            // 忽略解析错误
-          }
-        }
-      }
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop() || "";
+      for (const frame of frames) handleFrame(frame);
     }
+    if (buffer) handleFrame(buffer);
   } catch (e) {
-    messages.value.push({ role: "ai", content: "抱歉，请求失败：" + e.message });
+    // 断线：这里故意不清 pending —— 这正是「继续上次回答」要接住的场景
+    messages.value.push({ role: "ai", content: "连接中断了，可以点「继续上次回答」接着看。" });
   } finally {
     isStreaming.value = false;
     streamingContent.value = "";
     scrollToBottom();
+  }
+}
+
+function handleFrame(raw) {
+  const line = raw.split("\n").find((l) => l.startsWith("data: "));
+  if (!line) return;
+  let data;
+  try {
+    data = JSON.parse(line.slice(6));
+  } catch (e) {
+    return; // 忽略解析错误
+  }
+
+  if (data.turn_id) {
+    const pending = readPending();
+    if (!pending) {
+      writePending({ turn_id: data.turn_id, session_id: data.session_id || getSessionId(), started_at: Date.now() });
+    } else if (pending.turn_id !== data.turn_id) {
+      writePending({ ...pending, turn_id: data.turn_id });
+    }
+  }
+  if (data.content) {
+    streamingContent.value += data.content;
+    scrollToBottom();
+  }
+  if (data.done) {
+    messages.value.push({
+      role: "ai",
+      content: streamingContent.value,
+      dataCards: data.cards || [],
+    });
+    streamingContent.value = "";
+    writePending(null);
+  }
+  if (data.error) {
+    messages.value.push({ role: "ai", content: "抱歉，回答中断了：" + data.error });
+    streamingContent.value = "";
+    if (data.abandoned) writePending(null);
+  }
+}
+
+async function readError(response) {
+  try {
+    const body = await response.json();
+    return body.error || `HTTP ${response.status}`;
+  } catch (e) {
+    return `HTTP ${response.status}`;
   }
 }
 
@@ -286,6 +419,19 @@ function renderMarkdown(text) {
 }
 
 .chat-input { padding: 0; }
+
+.resume-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  background: #f2f7ff;
+  border: 1px solid #d6e4ff;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #4a5b7a;
+}
 
 .preset-list {
   display: flex;

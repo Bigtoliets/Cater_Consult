@@ -88,7 +88,7 @@ async def _try_finalize(payload: dict):
     batch_id = payload.get("batch_id", "")
     dish_id = payload.get("dish_id", "UNKNOWN")
     dish_name = payload.get("dish_name", "未知菜品")
-
+  
     if await q.is_dish_finalized(batch_id, dish_id):
         return
     lock_token = await q.acquire_merge_lock(batch_id, dish_id)
